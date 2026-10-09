@@ -1,0 +1,14 @@
+[package]
+name = "terminal-monitor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+terminal-core = { workspace = true }
+chrono = { workspace = true }
+regex = "1.11"
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

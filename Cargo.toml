@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/terminal-core",
+    "crates/terminal-vault",
+    "crates/terminal-pty",
+    "crates/terminal-monitor",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["TerminalPro Team"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Async & Utilities
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization & ID
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Security & Crypto
+argon2 = "0.5"
+aes-gcm = "0.10"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+
+# Error & Logging
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+
+# Internal Crates
+terminal-core = { path = "crates/terminal-core" }
+terminal-vault = { path = "crates/terminal-vault" }
