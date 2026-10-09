@@ -18,10 +18,15 @@ rm -rf "$BUNDLE_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources/web-ui"
 
-echo "=== 3. Constructing Native macOS App Bundle ==="
-# Native Mach-O executable as CFBundleExecutable
-cp "$DIR/target/release/terminal-desktop" "$APP_DIR/Contents/MacOS/TerminalPro"
+echo "=== 3. Compiling Native Cocoa WebKit Workstation Window ==="
+/usr/bin/clang -fobjc-arc -O3 -framework Cocoa -framework WebKit \
+  "$DIR/apps/desktop/resources/main.m" \
+  -o "$APP_DIR/Contents/MacOS/TerminalPro"
 chmod +x "$APP_DIR/Contents/MacOS/TerminalPro"
+
+echo "=== 4. Embedding Rust Backend Daemon ==="
+cp "$DIR/target/release/terminal-desktop" "$APP_DIR/Contents/MacOS/TerminalPro-backend"
+chmod +x "$APP_DIR/Contents/MacOS/TerminalPro-backend"
 
 # Copy Icon and static assets
 if [ -f "$DIR/apps/desktop/resources/AppIcon.icns" ]; then
@@ -29,7 +34,7 @@ if [ -f "$DIR/apps/desktop/resources/AppIcon.icns" ]; then
 fi
 cp -r "$DIR/apps/web-ui/dist/"* "$APP_DIR/Contents/Resources/web-ui/"
 
-# Write Info.plist
+# Write Info.plist with AppKit & ATS configuration
 cat << 'PLIST' > "$APP_DIR/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -57,17 +62,22 @@ cat << 'PLIST' > "$APP_DIR/Contents/Info.plist"
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
 PLIST
 
-echo "=== 4. Code Signing (Ad-hoc) and Clearing Extended Attributes ==="
-# Remove quarantine attributes that cause Gatekeeper "damaged" prompts
+echo "=== 5. Code Signing (Ad-hoc) and Clearing Extended Attributes ==="
 /usr/bin/xattr -cr "$APP_DIR" || true
-# Perform ad-hoc signature so macOS LaunchServices approves execution
 /usr/bin/codesign --force --deep -s - "$APP_DIR"
 
-echo "=== 5. Packaging DMG Installer ==="
+echo "=== 6. Packaging DMG Installer ==="
 DMG_STAGE="$DIR/target/dmg_stage"
 rm -rf "$DMG_STAGE"
 mkdir -p "$DMG_STAGE"
