@@ -38,6 +38,10 @@ impl TerminalAiClient {
         }
     }
 
+    pub fn config(&self) -> &AiClientConfig {
+        &self.config
+    }
+
     /// Build prompt to generate executable shell command from natural language
     pub fn build_generate_messages(
         &self,

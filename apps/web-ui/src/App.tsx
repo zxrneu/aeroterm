@@ -27,16 +27,28 @@ export function App() {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermInstance = useRef<Terminal | null>(null);
 
+  const isDev = window.location.port === '5173';
+  const apiBase = isDev ? 'http://127.0.0.1:12335' : window.location.origin;
+  const wsBase = isDev
+    ? 'ws://127.0.0.1:12335'
+    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+
   const [activeTab, setActiveTab] = useState<string>('local');
   const [activeDrawer, setActiveDrawer] = useState<'monitor' | 'sftp' | 'tunnels' | 'ai' | null>('monitor');
   const [broadcastEnabled, setBroadcastEnabled] = useState(false);
   const [vaultUnlocked] = useState(true);
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
 
-  // Monitor live metrics state (simulated real-time ticking)
+  // Monitor live metrics state
   const [cpuUsage, setCpuUsage] = useState(24.5);
   const [memUsage, setMemUsage] = useState(58.2);
   const [netRx, setNetRx] = useState(14.8);
   const [netTx, setNetTx] = useState(4.2);
+
+  // SFTP state
+  const [sftpPath, setSftpPath] = useState('.');
+  const [sftpEntries, setSftpEntries] = useState<Array<{ name: string; is_dir: boolean; size_bytes: number }>>([]);
 
   // AI chat state
   const [aiInput, setAiInput] = useState('');
@@ -47,18 +59,54 @@ export function App() {
     },
   ]);
 
-  // Periodic metric updates
+  // Periodic metric updates from backend probe
   useEffect(() => {
-    const timer = setInterval(() => {
+    const fetchMetrics = async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/metrics`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.cpu_usage_percent !== undefined) setCpuUsage(data.cpu_usage_percent);
+          if (data.memory?.used_percent !== undefined) setMemUsage(data.memory.used_percent);
+          if (data.network?.rx_bytes_sec) setNetRx(data.network.rx_bytes_sec / 1024 / 1024);
+          if (data.network?.tx_bytes_sec) setNetTx(data.network.tx_bytes_sec / 1024 / 1024);
+          return;
+        }
+      } catch {
+        // Fallback simulation
+      }
       setCpuUsage((prev) => Math.max(10, Math.min(95, prev + (Math.random() * 8 - 4))));
       setMemUsage((prev) => Math.max(20, Math.min(90, prev + (Math.random() * 2 - 1))));
       setNetRx((prev) => Math.max(1, Math.min(80, prev + (Math.random() * 4 - 2))));
       setNetTx((prev) => Math.max(0.5, Math.min(30, prev + (Math.random() * 2 - 1))));
-    }, 2000);
-    return () => clearInterval(timer);
-  }, []);
+    };
 
-  // Initialize xterm.js
+    const timer = setInterval(fetchMetrics, 2000);
+    fetchMetrics();
+    return () => clearInterval(timer);
+  }, [apiBase]);
+
+  // Load SFTP directory entries
+  const loadSftpList = async (path: string) => {
+    try {
+      const res = await fetch(`${apiBase}/api/sftp/list?path=${encodeURIComponent(path)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSftpEntries(data);
+        setSftpPath(path);
+      }
+    } catch {
+      // fallback
+    }
+  };
+
+  useEffect(() => {
+    if (activeDrawer === 'sftp') {
+      loadSftpList(sftpPath);
+    }
+  }, [activeDrawer, sftpPath, apiBase]);
+
+  // Initialize xterm.js & WebSocket bridge
   useEffect(() => {
     if (!terminalRef.current) return;
 
@@ -108,45 +156,87 @@ export function App() {
     fitAddon.fit();
     xtermInstance.current = term;
 
-    // Welcome message
+    // Welcome banner
     term.writeln('\x1b[1;36m======================================================================\x1b[0m');
     term.writeln('\x1b[1;34m  TerminalPro v0.1.0\x1b[0m \x1b[38;5;244m- Next-Gen Terminal Workstation (Rust Core)\x1b[0m');
     term.writeln('\x1b[38;5;244m  Zero-Knowledge Vault: \x1b[32mActive (AES-256-GCM)\x1b[0m | MCP Service: \x1b[32mhttp://127.0.0.1:12335\x1b[0m');
     term.writeln('\x1b[1;36m======================================================================\x1b[0m');
-    term.writeln('');
-    term.writeln('\x1b[32m➜\x1b[0m \x1b[36m~/coding/terminal_pro\x1b[0m \x1b[33m(main)\x1b[0m $ echo "Welcome to TerminalPro"');
-    term.writeln('Welcome to TerminalPro');
-    term.write('\x1b[32m➜\x1b[0m \x1b[36m~/coding/terminal_pro\x1b[0m \x1b[33m(main)\x1b[0m $ ');
+
+    // Connect WebSocket to real backend PTY/SSH session
+    let socket: WebSocket | null = null;
+    try {
+      socket = new WebSocket(`${wsBase}/ws/terminal/${activeTab}`);
+      socket.binaryType = 'arraybuffer';
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        setWsConnected(true);
+        term.writeln('\x1b[32m[✓] Live PTY Bridge Connected (ws://127.0.0.1:12335)\x1b[0m\r\n');
+        socket?.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      };
+
+      socket.onclose = () => {
+        setWsConnected(false);
+      };
+
+      socket.onerror = () => {
+        setWsConnected(false);
+      };
+
+      socket.onmessage = async (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          term.write(new Uint8Array(event.data));
+        } else if (typeof event.data === 'string') {
+          term.write(event.data);
+        }
+      };
+    } catch {
+      setWsConnected(false);
+    }
 
     let currentLine = '';
     term.onData((data) => {
-      if (data === '\r') {
-        term.writeln('');
-        handleCommand(currentLine.trim(), term);
-        currentLine = '';
-        term.write('\x1b[32m➜\x1b[0m \x1b[36m~/coding/terminal_pro\x1b[0m \x1b[33m(main)\x1b[0m $ ');
-      } else if (data === '\u007F') {
-        // Backspace
-        if (currentLine.length > 0) {
-          currentLine = currentLine.slice(0, -1);
-          term.write('\b \b');
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        if (broadcastEnabled) {
+          wsRef.current.send(JSON.stringify({ type: 'broadcast', data }));
+        } else {
+          wsRef.current.send(JSON.stringify({ type: 'input', data }));
         }
       } else {
-        currentLine += data;
-        term.write(data);
+        // Fallback local echo
+        if (data === '\r') {
+          term.writeln('');
+          handleCommand(currentLine.trim(), term);
+          currentLine = '';
+          term.write('\x1b[32m➜\x1b[0m \x1b[36m~/coding/terminal_pro\x1b[0m \x1b[33m(main)\x1b[0m $ ');
+        } else if (data === '\u007F') {
+          if (currentLine.length > 0) {
+            currentLine = currentLine.slice(0, -1);
+            term.write('\b \b');
+          }
+        } else {
+          currentLine += data;
+          term.write(data);
+        }
       }
     });
 
     const handleResize = () => {
       fitAddon.fit();
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
     };
     window.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      if (socket) {
+        socket.close();
+      }
       term.dispose();
     };
-  }, []);
+  }, [activeTab, broadcastEnabled, wsBase]);
 
   const handleCommand = (cmd: string, term: Terminal) => {
     if (!cmd) return;
@@ -166,13 +256,37 @@ export function App() {
     }
   };
 
-  const handleSendAi = () => {
+  const handleSendAi = async () => {
     if (!aiInput.trim()) return;
     const prompt = aiInput.trim();
     setAiMessages((prev) => [...prev, { sender: 'user', text: prompt }]);
     setAiInput('');
 
-    // Simulate AI inference response
+    try {
+      const res = await fetch(`${apiBase}/api/ai/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, os_type: 'macOS', current_cwd: '~/coding/terminal_pro' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const codeMatch = data.response?.match(/```(?:bash|sh)?\n([\s\S]*?)```/);
+        const code = codeMatch ? codeMatch[1].trim() : undefined;
+        setAiMessages((prev) => [
+          ...prev,
+          {
+            sender: 'assistant',
+            text: data.response,
+            code,
+          },
+        ]);
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Fallback simulation
     setTimeout(() => {
       if (prompt.includes('端口') || prompt.includes('占用')) {
         setAiMessages((prev) => [
@@ -202,11 +316,13 @@ export function App() {
           },
         ]);
       }
-    }, 600);
+    }, 400);
   };
 
   const injectCodeToTerminal = (code: string) => {
-    if (xtermInstance.current) {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'input', data: `${code}\n` }));
+    } else if (xtermInstance.current) {
       xtermInstance.current.writeln(code);
       xtermInstance.current.writeln(`[Executing: ${code}]`);
       xtermInstance.current.write('\x1b[32m➜\x1b[0m \x1b[36m~/coding/terminal_pro\x1b[0m \x1b[33m(main)\x1b[0m $ ');
@@ -377,6 +493,32 @@ export function App() {
           >
             <Zap size={11} />
             MCP: 12335
+          </div>
+
+          {/* PTY Live Connection Badge */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              background: wsConnected ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+              border: wsConnected ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(245, 158, 11, 0.3)',
+              color: wsConnected ? '#34d399' : '#fbbf24',
+            }}
+          >
+            <span
+              style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                background: wsConnected ? '#10b981' : '#f59e0b',
+                boxShadow: wsConnected ? '0 0 8px #10b981' : 'none',
+              }}
+            />
+            {wsConnected ? 'PTY: Online' : 'PTY: Offline'}
           </div>
 
           {/* Vault Status Badge */}
@@ -685,8 +827,11 @@ export function App() {
                 <>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <input
-                      placeholder="/var/www/production"
-                      readOnly
+                      value={sftpPath}
+                      onChange={(e) => setSftpPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') loadSftpList(sftpPath);
+                      }}
                       style={{
                         flex: 1,
                         background: '#171d2d',
@@ -697,22 +842,61 @@ export function App() {
                         fontSize: '12px',
                       }}
                     />
-                    <button style={{ padding: '6px', background: '#171d2d', borderRadius: '6px', color: '#94a3b8' }}>
+                    <button
+                      onClick={() => loadSftpList(sftpPath)}
+                      style={{ padding: '6px', background: '#171d2d', borderRadius: '6px', color: '#94a3b8' }}
+                      title="刷新"
+                    >
                       <RefreshCw size={14} />
                     </button>
                   </div>
 
-                  <div style={{ background: '#171d2d', borderRadius: '8px', border: '1px solid #1e2638', flex: 1, padding: '8px' }}>
-                    {[
-                      { name: '.. (上级目录)', type: 'dir', size: '-' },
-                      { name: 'docker-compose.yml', type: 'file', size: '2.4 KB' },
-                      { name: 'nginx.conf', type: 'file', size: '4.8 KB' },
-                      { name: 'app_backend.bin', type: 'file', size: '24.1 MB' },
-                      { name: 'logs/', type: 'dir', size: '18 项' },
-                      { name: '.env.production', type: 'file', size: '890 B' },
-                    ].map((f, i) => (
+                  <div style={{ background: '#171d2d', borderRadius: '8px', border: '1px solid #1e2638', flex: 1, padding: '8px', overflowY: 'auto' }}>
+                    {/* Parent Dir Button */}
+                    <div
+                      onClick={() => {
+                        const parts = sftpPath.replace(/\/+$/, '').split('/');
+                        parts.pop();
+                        const next = parts.join('/') || '.';
+                        setSftpPath(next);
+                        loadSftpList(next);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '6px 10px',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        color: '#94a3b8',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid #1e2638',
+                        marginBottom: '4px',
+                      }}
+                    >
+                      <FolderTree size={14} color="#f59e0b" />
+                      <span>.. (上级目录)</span>
+                    </div>
+
+                    {(sftpEntries.length > 0
+                      ? sftpEntries
+                      : [
+                          { name: 'Cargo.toml', is_dir: false, size_bytes: 2048 },
+                          { name: 'crates', is_dir: true, size_bytes: 0 },
+                          { name: 'apps', is_dir: true, size_bytes: 0 },
+                          { name: 'doc', is_dir: true, size_bytes: 0 },
+                          { name: 'README.md', is_dir: false, size_bytes: 1234 },
+                        ]
+                    ).map((f, i) => (
                       <div
                         key={i}
+                        onClick={() => {
+                          if (f.is_dir) {
+                            const next = sftpPath === '.' ? f.name : `${sftpPath}/${f.name}`;
+                            setSftpPath(next);
+                            loadSftpList(next);
+                          }
+                        }}
                         style={{
                           display: 'flex',
                           justifyContent: 'space-between',
@@ -721,14 +905,16 @@ export function App() {
                           borderRadius: '6px',
                           fontSize: '12px',
                           color: '#e2e8f0',
-                          cursor: 'pointer',
+                          cursor: f.is_dir ? 'pointer' : 'default',
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          {f.type === 'dir' ? <FolderTree size={14} color="#f59e0b" /> : <Code size={14} color="#38bdf8" />}
+                          {f.is_dir ? <FolderTree size={14} color="#f59e0b" /> : <Code size={14} color="#38bdf8" />}
                           <span>{f.name}</span>
                         </div>
-                        <span style={{ fontSize: '11px', color: '#64748b' }}>{f.size}</span>
+                        <span style={{ fontSize: '11px', color: '#64748b' }}>
+                          {f.is_dir ? '目录' : `${(f.size_bytes / 1024).toFixed(1)} KB`}
+                        </span>
                       </div>
                     ))}
                   </div>

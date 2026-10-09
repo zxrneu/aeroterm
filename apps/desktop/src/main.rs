@@ -1,9 +1,17 @@
+mod gateway;
+mod session;
+
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use terminal_ai::{AiClientConfig, TerminalAiClient};
 use terminal_mcp::{create_mcp_router, McpSecurityPolicy, McpServerState};
-use terminal_pty::PtySession;
 use terminal_vault::CredentialVault;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
+
+use crate::gateway::{create_gateway_router, AppState};
+use crate::session::SessionManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -11,13 +19,13 @@ async fn main() -> anyhow::Result<()> {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    let _ = tracing::subscriber::set_global_default(subscriber);
 
     println!(
         r#"
   ======================================================
      TerminalPro (XTerminal Benchmark Workstation)
-     Pure Rust Async Engine | Tauri 2.0 Host
+     Pure Rust Async Engine | Multi-Tab | MCP | AI
   ======================================================
 "#
     );
@@ -27,36 +35,65 @@ async fn main() -> anyhow::Result<()> {
     vault.initialize("TerminalPro_Default_Vault_Key_2026")?;
     info!("Credential Vault initialized with Argon2id + AES-256-GCM");
 
-    // 3. Test Local PTY
-    let pty = PtySession::spawn_default(24, 80)?;
-    info!("Local PTY engine spawned successfully");
-    drop(pty);
+    // 3. Initialize Session Manager & AI Copilot Client
+    let session_mgr = SessionManager::new();
+    let ai_config = AiClientConfig::default();
+    let ai_client = Arc::new(TerminalAiClient::new(ai_config));
 
-    // 4. Start embedded MCP Service on 127.0.0.1:12335
+    // Try locating web-ui dist directory
+    let mut web_dist_path = PathBuf::from("apps/web-ui/dist");
+    if !web_dist_path.exists() {
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            let p = PathBuf::from(manifest_dir).join("../web-ui/dist");
+            if p.exists() {
+                web_dist_path = p;
+            }
+        }
+    }
+
+    let app_state = AppState {
+        session_mgr,
+        ai_client,
+        web_dist_path: if web_dist_path.exists() {
+            Some(web_dist_path)
+        } else {
+            None
+        },
+    };
+
+    // 4. Initialize MCP Service & Merge with Gateway Router
     let policy = McpSecurityPolicy {
         enabled: true,
         auth_token: None, // No token required by default on localhost loopback
         require_confirmation_for_write: true,
         allowed_connection_ids: Vec::new(),
     };
-    let state = McpServerState::new(policy);
-    let app = create_mcp_router(state);
+    let mcp_state = McpServerState::new(policy);
+    let mcp_router = create_mcp_router(mcp_state);
+    let gateway_router = create_gateway_router(app_state);
+
+    // Merge routers
+    let app = gateway_router.merge(mcp_router);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12335));
     info!(
-        "Starting local Model Context Protocol (MCP) server on http://{}",
+        "TerminalPro unified gateway server listening on http://{}",
         addr
     );
+    info!("  - Web UI: http://{}/", addr);
+    info!(
+        "  - WebSocket Terminal: ws://{}/ws/terminal/{{session_id}}",
+        addr
+    );
+    info!("  - MCP Endpoints: http://{}/mcp/v1/tools", addr);
+    info!("  - Server Metrics: http://{}/api/metrics", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("TerminalPro backend runtime is ready and listening");
 
-    // In desktop mode, this runs in the background while GUI window is active.
-    // For standalone daemon mode, serve until shutdown.
     tokio::select! {
         res = axum::serve(listener, app) => {
             if let Err(e) = res {
-                tracing::error!("MCP server error: {}", e);
+                tracing::error!("Gateway server error: {}", e);
             }
         }
         _ = tokio::signal::ctrl_c() => {

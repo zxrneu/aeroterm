@@ -13,7 +13,11 @@ terminal-ssh = { path = "../../crates/terminal-ssh" }
 terminal-monitor = { path = "../../crates/terminal-monitor" }
 terminal-tunnel = { path = "../../crates/terminal-tunnel" }
 terminal-mcp = { path = "../../crates/terminal-mcp" }
-axum = "0.8"
+terminal-sftp = { path = "../../crates/terminal-sftp" }
+terminal-ai = { path = "../../crates/terminal-ai" }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+futures-util = "0.3"
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
