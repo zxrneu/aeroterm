@@ -29,6 +29,12 @@ pub enum TerminalError {
     #[error("MCP service error: {0}")]
     Mcp(String),
 
+    #[error("Network error: {0}")]
+    Network(String),
+
+    #[error("AI service error: {0}")]
+    Ai(String),
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

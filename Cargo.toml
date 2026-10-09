@@ -9,6 +9,7 @@ members = [
     "crates/terminal-tunnel",
     "crates/terminal-mcp",
     "crates/terminal-sftp",
+    "crates/terminal-ai",
     "apps/desktop",
 ]
 
