@@ -1,0 +1,15 @@
+[package]
+name = "terminal-tunnel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+terminal-core = { workspace = true }
+terminal-ssh = { path = "../terminal-ssh" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }

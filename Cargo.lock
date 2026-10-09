@@ -2141,6 +2141,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal-tunnel"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "terminal-core",
+ "terminal-ssh",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "terminal-vault"
 version = "0.1.0"
 dependencies = [
