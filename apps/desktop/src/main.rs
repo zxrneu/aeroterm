@@ -92,7 +92,31 @@ async fn main() -> anyhow::Result<()> {
     info!("  - MCP Endpoints: http://{}/mcp/v1/tools", addr);
     info!("  - Server Metrics: http://{}/api/metrics", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            tracing::warn!("TerminalPro is already running on port 12335. Opening browser tab...");
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open")
+                .arg("http://127.0.0.1:12335/")
+                .spawn();
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    // Auto-open default browser on macOS unless TERMINAL_PRO_NO_OPEN is set
+    if std::env::var("TERMINAL_PRO_NO_OPEN").is_err() {
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("open")
+                    .arg("http://127.0.0.1:12335/")
+                    .spawn();
+            }
+        });
+    }
 
     tokio::select! {
         res = axum::serve(listener, app) => {

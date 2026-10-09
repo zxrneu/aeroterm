@@ -91,6 +91,57 @@ pub enum TerminalWsClientMsg {
     Broadcast { data: String },
 }
 
+#[derive(rust_embed::Embed)]
+#[folder = "../web-ui/dist/"]
+struct EmbeddedWebAssets;
+
+async fn static_or_spa_handler(uri: axum::http::Uri) -> Response {
+    let raw_path = uri.path().trim_start_matches('/');
+    let path = if raw_path.is_empty() {
+        "index.html"
+    } else {
+        raw_path
+    };
+
+    match EmbeddedWebAssets::get(path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            (
+                axum::http::StatusCode::OK,
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_str(mime.as_ref())
+                        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
+                )],
+                content.data,
+            )
+                .into_response()
+        }
+        None => {
+            // SPA fallback: return index.html for unknown frontend routes
+            if let Some(index) = EmbeddedWebAssets::get("index.html") {
+                let mime = mime_guess::from_path("index.html").first_or_octet_stream();
+                (
+                    axum::http::StatusCode::OK,
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_str(mime.as_ref())
+                            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("text/html")),
+                    )],
+                    index.data,
+                )
+                    .into_response()
+            } else {
+                (
+                    axum::http::StatusCode::NOT_FOUND,
+                    "TerminalPro: Frontend assets not found",
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
 pub fn create_gateway_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -122,11 +173,13 @@ pub fn create_gateway_router(state: AppState) -> Router {
 
     if let Some(dist) = dist_path {
         if dist.exists() {
-            return api_router.fallback_service(ServeDir::new(dist));
+            return api_router.fallback_service(
+                ServeDir::new(dist).fallback(axum::routing::get(static_or_spa_handler)),
+            );
         }
     }
 
-    api_router
+    api_router.fallback(static_or_spa_handler)
 }
 
 async fn list_sessions(State(state): State<AppState>) -> Json<Vec<SessionSummary>> {
