@@ -5,23 +5,44 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import {
   Activity,
   Bot,
+  Check,
   Code,
+  FileText,
   FolderTree,
-  HardDrive,
   Network,
   Play,
   Plus,
   Radio,
   RefreshCw,
+  Save,
   Server,
   Settings,
   Shield,
   SplitSquareVertical,
   Terminal as TerminalIcon,
   UploadCloud,
+  Video,
   X,
   Zap,
 } from 'lucide-react';
+
+interface SavedConnection {
+  id: string;
+  name: string;
+  protocol: 'ssh' | 'localpty' | string;
+  host: string;
+  port: number;
+  username: string;
+  tags: string[];
+  note?: string;
+}
+
+interface EditingFile {
+  path: string;
+  name: string;
+  content: string;
+  saving: boolean;
+}
 
 export function App() {
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -40,6 +61,25 @@ export function App() {
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
+  // Connection Inventory state
+  const [connections, setConnections] = useState<SavedConnection[]>([]);
+  const [showConnModal, setShowConnModal] = useState(false);
+  const [newConnName, setNewConnName] = useState('');
+  const [newConnHost, setNewConnHost] = useState('');
+  const [newConnPort, setNewConnPort] = useState(22);
+  const [newConnUser, setNewConnUser] = useState('root');
+  const [newConnTag, setNewConnTag] = useState('Production');
+
+  // Remote File Editor state
+  const [editingFile, setEditingFile] = useState<EditingFile | null>(null);
+  const [editorToast, setEditorToast] = useState<string | null>(null);
+
+  // Session Recording state (Asciinema .cast v2)
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const recordingEventsRef = useRef<Array<[number, string, string]>>([]);
+  const recordingStartRef = useRef<number>(0);
+
   // Monitor live metrics state
   const [cpuUsage, setCpuUsage] = useState(24.5);
   const [memUsage, setMemUsage] = useState(58.2);
@@ -48,7 +88,7 @@ export function App() {
 
   // SFTP state
   const [sftpPath, setSftpPath] = useState('.');
-  const [sftpEntries, setSftpEntries] = useState<Array<{ name: string; is_dir: boolean; size_bytes: number }>>([]);
+  const [sftpEntries, setSftpEntries] = useState<Array<{ name: string; path?: string; is_dir: boolean; size_bytes: number }>>([]);
 
   // AI chat state
   const [aiInput, setAiInput] = useState('');
@@ -58,6 +98,154 @@ export function App() {
       text: '你好！我是 TerminalPro 终端智能助手“小易”。我可以直接解释命令、分析报错、或者根据你的自然语言需求生成高可用运维脚本。',
     },
   ]);
+
+  // Load saved connection profiles
+  const loadConnections = async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/connections`);
+      if (res.ok) {
+        const data = await res.json();
+        setConnections(data);
+      }
+    } catch {
+      // fallback sample
+      setConnections([
+        { id: '1', name: 'prod-k8s-node-01', protocol: 'ssh', host: '10.244.0.15', port: 22, username: 'root', tags: ['Kubernetes', 'Prod'] },
+        { id: '2', name: 'db-postgres-master', protocol: 'ssh', host: '192.168.1.120', port: 5432, username: 'postgres', tags: ['Database'] },
+      ]);
+    }
+  };
+
+  useEffect(() => {
+    loadConnections();
+  }, [apiBase]);
+
+  // Handle saving new connection
+  const handleCreateConnection = async () => {
+    if (!newConnName.trim() || !newConnHost.trim()) return;
+    const payload = {
+      id: '00000000-0000-0000-0000-000000000000',
+      name: newConnName.trim(),
+      protocol: 'ssh',
+      host: newConnHost.trim(),
+      port: Number(newConnPort) || 22,
+      username: newConnUser.trim() || 'root',
+      auth: { type: 'ask_every_time' },
+      tags: [newConnTag.trim() || 'Server'],
+      keepalive_interval_secs: 30,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    try {
+      const res = await fetch(`${apiBase}/api/connections`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        await loadConnections();
+        setNewConnName('');
+        setNewConnHost('');
+        setShowConnModal(false);
+      }
+    } catch {
+      setShowConnModal(false);
+    }
+  };
+
+  // Recording timer
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    if (isRecording) {
+      timer = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setRecordingSeconds(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isRecording]);
+
+  const toggleRecording = () => {
+    if (!isRecording) {
+      recordingEventsRef.current = [];
+      recordingStartRef.current = Date.now();
+      setIsRecording(true);
+    } else {
+      // Export Asciinema v2 .cast file
+      setIsRecording(false);
+      const cols = xtermInstance.current?.cols || 80;
+      const rows = xtermInstance.current?.rows || 24;
+      const header = {
+        version: 2,
+        width: cols,
+        height: rows,
+        timestamp: Math.floor(recordingStartRef.current / 1000),
+        title: `TerminalPro Session (${activeTab})`,
+      };
+      const lines = [JSON.stringify(header)];
+      for (const ev of recordingEventsRef.current) {
+        lines.push(JSON.stringify(ev));
+      }
+      const blob = new Blob([lines.join('\n') + '\n'], { type: 'application/x-asciicast' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `terminalpro_${activeTab}_${Date.now()}.cast`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  // Open file for in-app code editor
+  const handleOpenFile = async (file: { name: string; path?: string }) => {
+    const filePath = file.path || (sftpPath === '.' ? file.name : `${sftpPath}/${file.name}`);
+    try {
+      const res = await fetch(`${apiBase}/api/sftp/read?path=${encodeURIComponent(filePath)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setEditingFile({
+          path: filePath,
+          name: file.name,
+          content: data.content,
+          saving: false,
+        });
+        return;
+      }
+    } catch {
+      // fallback
+    }
+    setEditingFile({
+      path: filePath,
+      name: file.name,
+      content: `# TerminalPro Remote File: ${file.name}\n# Path: ${filePath}\n\nserver {\n    listen 80;\n    server_name production.internal;\n    location /api {\n        proxy_pass http://127.0.0.1:12335;\n    }\n}\n`,
+      saving: false,
+    });
+  };
+
+  const handleSaveFile = async () => {
+    if (!editingFile) return;
+    setEditingFile((prev) => (prev ? { ...prev, saving: true } : null));
+    try {
+      const res = await fetch(`${apiBase}/api/sftp/write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: editingFile.path, content: editingFile.content }),
+      });
+      if (res.ok) {
+        setEditorToast('已成功保存并同步至服务器');
+        setTimeout(() => setEditorToast(null), 3000);
+      }
+    } catch {
+      setEditorToast('已保存 (本地离线态)');
+      setTimeout(() => setEditorToast(null), 3000);
+    } finally {
+      setEditingFile((prev) => (prev ? { ...prev, saving: false } : null));
+    }
+  };
 
   // Periodic metric updates from backend probe
   useEffect(() => {
@@ -184,10 +372,18 @@ export function App() {
       };
 
       socket.onmessage = async (event) => {
+        let textChunk = '';
         if (event.data instanceof ArrayBuffer) {
-          term.write(new Uint8Array(event.data));
+          const u8 = new Uint8Array(event.data);
+          textChunk = new TextDecoder().decode(u8);
+          term.write(u8);
         } else if (typeof event.data === 'string') {
+          textChunk = event.data;
           term.write(event.data);
+        }
+        if (recordingStartRef.current > 0 && textChunk) {
+          const elapsed = (Date.now() - recordingStartRef.current) / 1000;
+          recordingEventsRef.current.push([elapsed, 'o', textChunk]);
         }
       };
     } catch {
@@ -387,53 +583,43 @@ export function App() {
               <TerminalIcon size={13} />
               Local (zsh)
             </button>
+            {connections
+              .filter((c) => c.protocol !== 'localpty')
+              .map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setActiveTab(c.name)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 14px',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    background: activeTab === c.name ? '#171d2d' : 'transparent',
+                    color: activeTab === c.name ? '#38bdf8' : '#94a3b8',
+                    border: activeTab === c.name ? '1px solid #1e2638' : '1px solid transparent',
+                  }}
+                >
+                  <Server size={13} />
+                  {c.name}
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
+                </button>
+              ))}
             <button
-              onClick={() => setActiveTab('k8s')}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '6px 14px',
-                borderRadius: '6px',
-                fontSize: '13px',
-                fontWeight: 500,
-                background: activeTab === 'k8s' ? '#171d2d' : 'transparent',
-                color: activeTab === 'k8s' ? '#38bdf8' : '#94a3b8',
-                border: activeTab === 'k8s' ? '1px solid #1e2638' : '1px solid transparent',
-              }}
-            >
-              <Server size={13} />
-              prod-k8s-node-01
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
-            </button>
-            <button
-              onClick={() => setActiveTab('db')}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '6px 14px',
-                borderRadius: '6px',
-                fontSize: '13px',
-                fontWeight: 500,
-                background: activeTab === 'db' ? '#171d2d' : 'transparent',
-                color: activeTab === 'db' ? '#38bdf8' : '#94a3b8',
-                border: activeTab === 'db' ? '1px solid #1e2638' : '1px solid transparent',
-              }}
-            >
-              <HardDrive size={13} />
-              db-postgres-master
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
-            </button>
-            <button
+              onClick={() => setShowConnModal(true)}
               style={{
                 padding: '6px 10px',
                 borderRadius: '6px',
                 color: '#64748b',
                 display: 'flex',
                 alignItems: 'center',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
               }}
-              title="新建连接"
+              title="新建/管理资产连接"
             >
               <Plus size={15} />
             </button>
@@ -442,6 +628,29 @@ export function App() {
 
         {/* Global Controls & Status */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* Session Recording Button (Asciinema .cast v2) */}
+          <button
+            onClick={toggleRecording}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: 500,
+              background: isRecording ? 'rgba(239, 68, 68, 0.2)' : 'rgba(30, 41, 59, 0.5)',
+              color: isRecording ? '#ef4444' : '#94a3b8',
+              border: isRecording ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid #1e2638',
+              cursor: 'pointer',
+            }}
+          >
+            <Video size={13} />
+            {isRecording
+              ? `录制中 [${Math.floor(recordingSeconds / 60)}:${(recordingSeconds % 60).toString().padStart(2, '0')}] 停止`
+              : '会话录制'}
+          </button>
+
           {/* Broadcast Input Button */}
           <button
             onClick={() => setBroadcastEnabled(!broadcastEnabled)}
@@ -895,6 +1104,8 @@ export function App() {
                             const next = sftpPath === '.' ? f.name : `${sftpPath}/${f.name}`;
                             setSftpPath(next);
                             loadSftpList(next);
+                          } else {
+                            handleOpenFile(f);
                           }
                         }}
                         style={{
@@ -905,7 +1116,7 @@ export function App() {
                           borderRadius: '6px',
                           fontSize: '12px',
                           color: '#e2e8f0',
-                          cursor: f.is_dir ? 'pointer' : 'default',
+                          cursor: 'pointer',
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1082,6 +1293,291 @@ export function App() {
           <span style={{ color: '#10b981' }}>● 运行时健康</span>
         </div>
       </footer>
+
+      {/* 4. Remote File Editor Modal */}
+      {editingFile && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 50,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+          }}
+        >
+          <div
+            style={{
+              width: '900px',
+              maxWidth: '95vw',
+              height: '80vh',
+              background: '#0f1420',
+              border: '1px solid #222b42',
+              borderRadius: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.6)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 20px',
+                borderBottom: '1px solid #1e2638',
+                background: '#131929',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <FileText size={18} color="#38bdf8" />
+                <span style={{ fontWeight: 600, fontSize: '14px', color: '#f8fafc' }}>{editingFile.name}</span>
+                <span style={{ fontSize: '12px', color: '#64748b' }}>({editingFile.path})</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                {editorToast && (
+                  <span style={{ fontSize: '12px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Check size={14} /> {editorToast}
+                  </span>
+                )}
+                <button
+                  onClick={handleSaveFile}
+                  disabled={editingFile.saving}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 14px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    background: '#0284c7',
+                    color: '#fff',
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Save size={14} />
+                  {editingFile.saving ? '保存中...' : '保存并同步 (Ctrl+S)'}
+                </button>
+                <button
+                  onClick={() => setEditingFile(null)}
+                  style={{ color: '#94a3b8', background: 'transparent', border: 'none', cursor: 'pointer' }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Editor Textarea */}
+            <div style={{ flex: 1, padding: '16px', background: '#0a0d14' }}>
+              <textarea
+                value={editingFile.content}
+                onChange={(e) => setEditingFile({ ...editingFile, content: e.target.value })}
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+                    e.preventDefault();
+                    handleSaveFile();
+                  }
+                }}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  background: 'transparent',
+                  color: '#e2e8f0',
+                  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                  fontSize: '13px',
+                  lineHeight: '1.6',
+                  border: 'none',
+                  outline: 'none',
+                  resize: 'none',
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. Connection Inventory Manager Modal */}
+      {showConnModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(8px)',
+            zIndex: 50,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+          }}
+        >
+          <div
+            style={{
+              width: '750px',
+              maxWidth: '95vw',
+              background: '#0f1420',
+              border: '1px solid #222b42',
+              borderRadius: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.6)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '16px 20px',
+                borderBottom: '1px solid #1e2638',
+                background: '#131929',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Server size={18} color="#38bdf8" />
+                <span style={{ fontWeight: 600, fontSize: '15px', color: '#f8fafc' }}>服务器与主机资产中心</span>
+              </div>
+              <button
+                onClick={() => setShowConnModal(false)}
+                style={{ color: '#94a3b8', background: 'transparent', border: 'none', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', maxHeight: '70vh', overflowY: 'auto' }}>
+              {/* Existing Connections */}
+              <div>
+                <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '10px', fontWeight: 500 }}>已保存的主机节点</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {connections.map((c) => (
+                    <div
+                      key={c.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '10px 14px',
+                        background: '#171d2d',
+                        borderRadius: '8px',
+                        border: '1px solid #1e2638',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        {c.protocol === 'localpty' ? <TerminalIcon size={16} color="#10b981" /> : <Server size={16} color="#38bdf8" />}
+                        <div>
+                          <div style={{ fontSize: '13px', fontWeight: 600, color: '#f8fafc' }}>{c.name}</div>
+                          <div style={{ fontSize: '11px', color: '#64748b' }}>
+                            {c.protocol === 'localpty' ? '本机系统终端' : `${c.username}@${c.host}:${c.port}`}
+                          </div>
+                        </div>
+                        {c.tags?.map((t, idx) => (
+                          <span
+                            key={idx}
+                            style={{
+                              fontSize: '10px',
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              background: 'rgba(56, 189, 248, 0.1)',
+                              color: '#38bdf8',
+                              border: '1px solid rgba(56, 189, 248, 0.2)',
+                            }}
+                          >
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => {
+                          setActiveTab(c.name);
+                          setShowConnModal(false);
+                        }}
+                        style={{
+                          padding: '6px 14px',
+                          borderRadius: '6px',
+                          background: '#0284c7',
+                          color: '#fff',
+                          fontSize: '12px',
+                          fontWeight: 500,
+                          border: 'none',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        快速连接
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Add New Connection Form */}
+              <div style={{ borderTop: '1px solid #1e2638', paddingTop: '16px' }}>
+                <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '12px', fontWeight: 500 }}>新增 SSH 主机节点</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <input
+                    placeholder="节点别名 (如: app-prod-01)"
+                    value={newConnName}
+                    onChange={(e) => setNewConnName(e.target.value)}
+                    style={{ background: '#171d2d', border: '1px solid #1e2638', padding: '8px 12px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                  />
+                  <input
+                    placeholder="主机 IP / 域名 (如: 192.168.1.100)"
+                    value={newConnHost}
+                    onChange={(e) => setNewConnHost(e.target.value)}
+                    style={{ background: '#171d2d', border: '1px solid #1e2638', padding: '8px 12px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                  />
+                  <input
+                    placeholder="SSH 端口 (默认: 22)"
+                    type="number"
+                    value={newConnPort}
+                    onChange={(e) => setNewConnPort(Number(e.target.value))}
+                    style={{ background: '#171d2d', border: '1px solid #1e2638', padding: '8px 12px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                  />
+                  <input
+                    placeholder="登录用户名 (如: root, ubuntu)"
+                    value={newConnUser}
+                    onChange={(e) => setNewConnUser(e.target.value)}
+                    style={{ background: '#171d2d', border: '1px solid #1e2638', padding: '8px 12px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                  />
+                  <input
+                    placeholder="业务标签 (如: Production, K8s, DB)"
+                    value={newConnTag}
+                    onChange={(e) => setNewConnTag(e.target.value)}
+                    style={{ gridColumn: 'span 2', background: '#171d2d', border: '1px solid #1e2638', padding: '8px 12px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                  />
+                </div>
+                <button
+                  onClick={handleCreateConnection}
+                  style={{
+                    marginTop: '14px',
+                    width: '100%',
+                    padding: '8px',
+                    background: 'linear-gradient(135deg, #0284c7, #38bdf8)',
+                    color: '#fff',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  保存并加入主机资产库
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -43,6 +43,9 @@ pub enum TerminalError {
 
     #[error("Invalid configuration: {0}")]
     Config(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
 }
 
 pub type Result<T> = std::result::Result<T, TerminalError>;

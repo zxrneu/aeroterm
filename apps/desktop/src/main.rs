@@ -1,4 +1,5 @@
 mod gateway;
+mod inventory;
 mod session;
 
 use std::net::SocketAddr;
@@ -11,6 +12,7 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::gateway::{create_gateway_router, AppState};
+use crate::inventory::InventoryManager;
 use crate::session::SessionManager;
 
 #[tokio::main]
@@ -35,8 +37,9 @@ async fn main() -> anyhow::Result<()> {
     vault.initialize("TerminalPro_Default_Vault_Key_2026")?;
     info!("Credential Vault initialized with Argon2id + AES-256-GCM");
 
-    // 3. Initialize Session Manager & AI Copilot Client
+    // 3. Initialize Session Manager, Inventory & AI Copilot Client
     let session_mgr = SessionManager::new();
+    let inventory_mgr = InventoryManager::new_default();
     let ai_config = AiClientConfig::default();
     let ai_client = Arc::new(TerminalAiClient::new(ai_config));
 
@@ -54,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
     let app_state = AppState {
         session_mgr,
         ai_client,
+        inventory_mgr,
         web_dist_path: if web_dist_path.exists() {
             Some(web_dist_path)
         } else {

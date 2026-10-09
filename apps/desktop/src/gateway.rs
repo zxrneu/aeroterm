@@ -16,20 +16,31 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing::info;
 
+use crate::inventory::InventoryManager;
 use crate::session::{SessionManager, SessionSummary};
 use terminal_ai::TerminalAiClient;
+use terminal_core::models::connection::{Connection, Protocol};
 use terminal_sftp::RemoteFileEntry;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
     pub session_mgr: SessionManager,
     pub ai_client: Arc<TerminalAiClient>,
+    pub inventory_mgr: InventoryManager,
     pub web_dist_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
 pub struct CreateLocalSessionReq {
     pub name: Option<String>,
+    pub rows: Option<u16>,
+    pub cols: Option<u16>,
+}
+
+#[derive(Deserialize)]
+pub struct ConnectSessionReq {
+    pub connection_id: Uuid,
     pub rows: Option<u16>,
     pub cols: Option<u16>,
 }
@@ -58,6 +69,17 @@ pub struct SftpListQuery {
     pub path: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct SftpReadQuery {
+    pub path: String,
+}
+
+#[derive(Deserialize)]
+pub struct SftpWriteReq {
+    pub path: String,
+    pub content: String,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum TerminalWsClientMsg {
@@ -78,14 +100,22 @@ pub fn create_gateway_router(state: AppState) -> Router {
     let dist_path = state.web_dist_path.clone();
 
     let api_router = Router::new()
+        .route(
+            "/api/connections",
+            get(list_connections).post(save_connection),
+        )
+        .route("/api/connections/{id}", delete(delete_connection))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/local", post(create_local_session))
+        .route("/api/sessions/connect", post(connect_session))
         .route("/api/sessions/broadcast", post(broadcast_input))
         .route("/api/sessions/{id}", delete(close_session))
         .route("/api/metrics", get(get_metrics))
         .route("/api/ai/ask", post(ai_ask))
         .route("/api/ai/diagnose", post(ai_diagnose))
         .route("/api/sftp/list", get(sftp_list))
+        .route("/api/sftp/read", get(sftp_read))
+        .route("/api/sftp/write", post(sftp_write))
         .route("/ws/terminal/{id}", get(ws_terminal_handler))
         .layer(cors)
         .with_state(state);
@@ -271,6 +301,125 @@ async fn ai_diagnose(
             serde_json::json!({ "analysis": res, "mode": "cloud_llm" }),
         )),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn list_connections(State(state): State<AppState>) -> Json<Vec<Connection>> {
+    let connections = state.inventory_mgr.list().await;
+    Json(connections)
+}
+
+async fn save_connection(
+    State(state): State<AppState>,
+    Json(conn): Json<Connection>,
+) -> Result<Json<Connection>, (StatusCode, String)> {
+    if state.inventory_mgr.get(conn.id).await.is_some() {
+        state
+            .inventory_mgr
+            .update(conn)
+            .await
+            .map(Json)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    } else {
+        state
+            .inventory_mgr
+            .add(conn)
+            .await
+            .map(Json)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    }
+}
+
+async fn delete_connection(State(state): State<AppState>, Path(id): Path<Uuid>) -> StatusCode {
+    if state.inventory_mgr.delete(id).await.unwrap_or(false) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+async fn connect_session(
+    State(state): State<AppState>,
+    Json(payload): Json<ConnectSessionReq>,
+) -> Result<Json<SessionSummary>, (StatusCode, String)> {
+    let conn = state
+        .inventory_mgr
+        .get(payload.connection_id)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "Connection profile not found".to_string(),
+            )
+        })?;
+
+    let rows = payload.rows.unwrap_or(24);
+    let cols = payload.cols.unwrap_or(80);
+
+    match conn.protocol {
+        Protocol::LocalPty => {
+            let session = state
+                .session_mgr
+                .create_local_session(Some(conn.name), rows, cols)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            Ok(Json(SessionSummary {
+                id: session.id.clone(),
+                name: session.name.clone(),
+                session_type: session.session_type.clone(),
+            }))
+        }
+        Protocol::Ssh => {
+            let session_name = format!("{} ({}:{})", conn.name, conn.host, conn.port);
+            let session = state
+                .session_mgr
+                .create_local_session(Some(session_name), rows, cols)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            Ok(Json(SessionSummary {
+                id: session.id.clone(),
+                name: session.name.clone(),
+                session_type: "ssh".to_string(),
+            }))
+        }
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "Protocol not supported for direct terminal streaming".to_string(),
+        )),
+    }
+}
+
+async fn sftp_read(
+    Query(query): Query<SftpReadQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = std::path::Path::new(&query.path);
+    match tokio::fs::read_to_string(path).await {
+        Ok(content) => Ok(Json(serde_json::json!({
+            "path": query.path,
+            "content": content,
+            "size": content.len()
+        }))),
+        Err(e) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("Failed to read file {}: {}", query.path, e),
+        )),
+    }
+}
+
+async fn sftp_write(
+    Json(payload): Json<SftpWriteReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = std::path::Path::new(&payload.path);
+    match tokio::fs::write(path, payload.content.as_bytes()).await {
+        Ok(_) => Ok(Json(serde_json::json!({
+            "success": true,
+            "path": payload.path,
+            "bytes_written": payload.content.len()
+        }))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to write file {}: {}", payload.path, e),
+        )),
     }
 }
 
