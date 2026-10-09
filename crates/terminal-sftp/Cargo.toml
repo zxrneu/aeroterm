@@ -1,0 +1,21 @@
+[package]
+name = "terminal-sftp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+terminal-core = { workspace = true }
+terminal-ssh = { path = "../terminal-ssh" }
+tokio = { workspace = true }
+russh = "0.64"
+russh-sftp = "3.0"
+tar = "0.4"
+flate2 = "1.1"
+zstd = "0.13"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
