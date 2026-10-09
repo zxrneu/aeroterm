@@ -5,6 +5,7 @@ members = [
     "crates/terminal-vault",
     "crates/terminal-pty",
     "crates/terminal-monitor",
+    "crates/terminal-ssh",
 ]
 
 [workspace.package]
