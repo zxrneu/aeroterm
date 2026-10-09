@@ -1,0 +1,22 @@
+[package]
+name = "terminal-desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+terminal-core = { path = "../../crates/terminal-core" }
+terminal-vault = { path = "../../crates/terminal-vault" }
+terminal-pty = { path = "../../crates/terminal-pty" }
+terminal-ssh = { path = "../../crates/terminal-ssh" }
+terminal-monitor = { path = "../../crates/terminal-monitor" }
+terminal-tunnel = { path = "../../crates/terminal-tunnel" }
+terminal-mcp = { path = "../../crates/terminal-mcp" }
+axum = "0.8"
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

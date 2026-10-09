@@ -8,6 +8,7 @@ members = [
     "crates/terminal-ssh",
     "crates/terminal-tunnel",
     "crates/terminal-mcp",
+    "apps/desktop",
 ]
 
 [workspace.package]
