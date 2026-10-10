@@ -336,6 +336,8 @@ export function App() {
   activePaneRef.current = activePane;
   const editingFileRef = useRef(editingFile);
   editingFileRef.current = editingFile;
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
 
   // Shortcut Actions
   const handleCloseActiveTab = useCallback(() => {
@@ -406,12 +408,41 @@ export function App() {
     setShortcutToast('终端字号恢复默认 (14px)');
   }, []);
 
+  const handleToggleSplitScreen = useCallback(() => {
+    setIsSplitScreen((prev) => {
+      const next = !prev;
+      if (!next) {
+        setActivePane('main');
+        setTimeout(() => mainXterm.current?.focus(), 50);
+      }
+      setShortcutToast(next ? '开启双屏分屏终端' : '已关闭分屏终端');
+      return next;
+    });
+  }, []);
+
+  const handleSwitchPaneFocus = useCallback(() => {
+    if (!isSplitScreenRef.current) {
+      setShortcutToast('当前为单屏模式，按 ⌘D / Ctrl+Shift+D 开启分屏');
+      return;
+    }
+    const nextPane = activePaneRef.current === 'main' ? 'split' : 'main';
+    setActivePane(nextPane);
+    setShortcutToast(`切换焦点至: ${nextPane === 'main' ? '主终端' : '分屏终端'}`);
+    setTimeout(() => {
+      if (nextPane === 'split') {
+        splitXterm.current?.focus();
+      } else {
+        mainXterm.current?.focus();
+      }
+    }, 20);
+  }, []);
+
   const handlePasteToActive = useCallback(async () => {
     try {
       const text = await navigator.clipboard.readText();
       if (!text) return;
-      const targetWs = activePaneRef.current === 'split' ? splitWsRef.current : mainWsRef.current;
-      const targetTerm = activePaneRef.current === 'split' ? splitXterm.current : mainXterm.current;
+      const targetWs = (activePaneRef.current === 'split' && isSplitScreenRef.current) ? splitWsRef.current : mainWsRef.current;
+      const targetTerm = (activePaneRef.current === 'split' && isSplitScreenRef.current) ? splitXterm.current : mainXterm.current;
       if (targetWs && targetWs.readyState === WebSocket.OPEN) {
         if (broadcastEnabledRef.current) {
           targetWs.send(JSON.stringify({ type: 'broadcast', data: text }));
@@ -456,6 +487,56 @@ export function App() {
       }
     }
   }, [fontSize]);
+
+  // Synchronize terminal fit when split screen or drawer toggles
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (mainXterm.current && mainFitAddon.current) {
+        mainFitAddon.current.fit();
+        if (mainWsRef.current?.readyState === WebSocket.OPEN) {
+          mainWsRef.current.send(
+            JSON.stringify({
+              type: 'resize',
+              cols: mainXterm.current.cols,
+              rows: mainXterm.current.rows,
+            })
+          );
+        }
+      }
+      if (isSplitScreen && splitXterm.current && splitFitAddon.current) {
+        splitFitAddon.current.fit();
+        if (splitWsRef.current?.readyState === WebSocket.OPEN) {
+          splitWsRef.current.send(
+            JSON.stringify({
+              type: 'resize',
+              cols: splitXterm.current.cols,
+              rows: splitXterm.current.rows,
+            })
+          );
+        }
+      }
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [isSplitScreen, activeDrawer]);
+
+  // Reset active pane to main when split screen is turned off
+  useEffect(() => {
+    if (!isSplitScreen && activePane !== 'main') {
+      setActivePane('main');
+      mainXterm.current?.focus();
+    }
+  }, [isSplitScreen, activePane]);
+
+  // Focus terminal when active pane changes
+  useEffect(() => {
+    if (activePane === 'split') {
+      if (isSplitScreen) {
+        splitXterm.current?.focus();
+      }
+    } else {
+      mainXterm.current?.focus();
+    }
+  }, [activePane, isSplitScreen]);
 
 
   // Recording Timer
@@ -612,15 +693,13 @@ export function App() {
         (isMac && e.metaKey && (e.key === 'd' || e.key === 'D')) ||
         (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D'))
       ) {
-        setIsSplitScreen((prev) => !prev);
-        setShortcutToast(`切换双屏分屏 (${isMac ? '⌘D' : 'Ctrl+Shift+D'})`);
+        handleToggleSplitScreen();
         return false;
       }
 
       // 11. Switch Pane Focus: Alt+ArrowLeft / Alt+ArrowRight / Alt+O
       if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'o' || e.key === 'O')) {
-        setActivePane((prev) => (prev === 'main' ? 'split' : 'main'));
-        setShortcutToast('切换分屏焦点');
+        handleSwitchPaneFocus();
         return false;
       }
 
@@ -731,6 +810,8 @@ export function App() {
       handleZoomOut,
       handleZoomReset,
       handlePasteToActive,
+      handleToggleSplitScreen,
+      handleSwitchPaneFocus,
       toggleRecording,
     ]
   );
@@ -826,8 +907,18 @@ export function App() {
         (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D'))
       ) {
         e.preventDefault();
-        setIsSplitScreen((prev) => !prev);
-        setShortcutToast(`切换双屏分屏 (${isMac ? '⌘D' : 'Ctrl+Shift+D'})`);
+        handleToggleSplitScreen();
+        return;
+      }
+
+      // Switch Pane Focus (Alt+ArrowLeft / Alt+ArrowRight / Alt+O)
+      if (
+        e.altKey &&
+        (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'o' || e.key === 'O') &&
+        !isInInput
+      ) {
+        e.preventDefault();
+        handleSwitchPaneFocus();
         return;
       }
 
@@ -929,6 +1020,8 @@ export function App() {
     handleZoomIn,
     handleZoomOut,
     handleZoomReset,
+    handleToggleSplitScreen,
+    handleSwitchPaneFocus,
   ]);
 
 
@@ -1088,7 +1181,7 @@ export function App() {
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
-      fontSize: fontSize,
+      fontSize: fontSizeRef.current,
       fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace",
       theme: {
         background: '#0a0d14',
@@ -1164,7 +1257,7 @@ export function App() {
 
     term.onData((data) => {
       if (mainWsRef.current && mainWsRef.current.readyState === WebSocket.OPEN) {
-        if (broadcastEnabled) {
+        if (broadcastEnabledRef.current) {
           mainWsRef.current.send(JSON.stringify({ type: 'broadcast', data }));
         } else {
           mainWsRef.current.send(JSON.stringify({ type: 'input', data }));
@@ -1186,7 +1279,7 @@ export function App() {
       mainSearchAddon.current = null;
       term.dispose();
     };
-  }, [activeTabId, broadcastEnabled, wsBase, handleTerminalKeyEvent]);
+  }, [activeTabId, wsBase, handleTerminalKeyEvent]);
 
   // Split-Screen Terminal Initialization
   useEffect(() => {
@@ -1195,7 +1288,7 @@ export function App() {
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
-      fontSize: fontSize,
+      fontSize: fontSizeRef.current,
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
       theme: {
         background: '#0a0d14',
@@ -1215,6 +1308,13 @@ export function App() {
     fitAddon.fit();
     splitXterm.current = term;
     splitFitAddon.current = fitAddon;
+
+    const initialFitTimer = setTimeout(() => {
+      fitAddon.fit();
+      if (splitWsRef.current?.readyState === WebSocket.OPEN) {
+        splitWsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    }, 60);
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       return handleTerminalKeyEvent(e, term, true);
@@ -1243,25 +1343,43 @@ export function App() {
 
     term.onData((data) => {
       if (splitWsRef.current && splitWsRef.current.readyState === WebSocket.OPEN) {
-        splitWsRef.current.send(JSON.stringify({ type: 'input', data }));
+        if (broadcastEnabledRef.current) {
+          splitWsRef.current.send(JSON.stringify({ type: 'broadcast', data }));
+        } else {
+          splitWsRef.current.send(JSON.stringify({ type: 'input', data }));
+        }
       }
     });
 
-    const handleResize = () => fitAddon.fit();
+    const handleResize = () => {
+      fitAddon.fit();
+      if (splitWsRef.current && splitWsRef.current.readyState === WebSocket.OPEN) {
+        splitWsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    };
     window.addEventListener('resize', handleResize);
 
     return () => {
+      clearTimeout(initialFitTimer);
       window.removeEventListener('resize', handleResize);
       if (socket) socket.close();
       splitSearchAddon.current = null;
+      splitFitAddon.current = null;
+      splitXterm.current = null;
+      splitWsRef.current = null;
       term.dispose();
     };
   }, [isSplitScreen, splitTabId, wsBase, handleTerminalKeyEvent]);
 
   // Execute Quick Command
   const runQuickCommand = (cmd: string) => {
-    if (mainWsRef.current && mainWsRef.current.readyState === WebSocket.OPEN) {
-      mainWsRef.current.send(JSON.stringify({ type: 'input', data: `${cmd}\n` }));
+    const targetWs = (activePaneRef.current === 'split' && isSplitScreenRef.current) ? splitWsRef.current : mainWsRef.current;
+    if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+      if (broadcastEnabledRef.current) {
+        targetWs.send(JSON.stringify({ type: 'broadcast', data: `${cmd}\n` }));
+      } else {
+        targetWs.send(JSON.stringify({ type: 'input', data: `${cmd}\n` }));
+      }
     }
   };
 
@@ -1416,12 +1534,22 @@ export function App() {
     {
       id: 'split-toggle-cmd',
       category: '分屏管理',
-      title: '切换双屏分屏终端',
+      title: isSplitScreen ? '关闭双屏分屏终端' : '开启双屏分屏终端',
       description: '并排开启或关闭右侧分屏终端',
       shortcut: isMac ? '⌘D' : 'Ctrl+Shift+D',
       icon: <SplitSquareVertical size={16} color="#38bdf8" />,
-      action: () => setIsSplitScreen((prev) => !prev),
+      action: handleToggleSplitScreen,
       keywords: ['split', '分屏', '双屏'],
+    },
+    {
+      id: 'split-focus-cmd',
+      category: '分屏管理',
+      title: '切换分屏终端焦点',
+      description: '在左侧主终端与右侧分屏终端之间切换焦点',
+      shortcut: isMac ? '⌥← / ⌥→' : 'Alt+Left / Alt+Right',
+      icon: <SplitSquareVertical size={16} color="#10b981" />,
+      action: handleSwitchPaneFocus,
+      keywords: ['focus', '焦点', '分屏焦点', '切换'],
     },
 
     // 终端查找与视图
@@ -1802,7 +1930,7 @@ export function App() {
 
           {/* Split Screen Control */}
           <button
-            onClick={() => setIsSplitScreen(!isSplitScreen)}
+            onClick={handleToggleSplitScreen}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -2142,7 +2270,10 @@ export function App() {
             <div
               ref={mainTermRef}
               className="terminal-container"
-              onClick={() => setActivePane('main')}
+              onClick={() => {
+                setActivePane('main');
+                mainXterm.current?.focus();
+              }}
               style={{
                 position: 'relative',
                 flex: 1,
@@ -2150,11 +2281,43 @@ export function App() {
                 height: '100%',
                 overflow: 'hidden',
                 borderRight: isSplitScreen ? '1px solid #1e2638' : 'none',
-                boxShadow: isSplitScreen && activePane === 'main' ? 'inset 0 0 0 1px rgba(56, 189, 248, 0.4)' : 'none',
+                boxShadow: isSplitScreen && activePane === 'main' ? 'inset 0 0 0 1px rgba(56, 189, 248, 0.45)' : 'none',
               }}
             >
+              {isSplitScreen && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '6px',
+                    left: '12px',
+                    zIndex: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    background: activePane === 'main' ? 'rgba(56, 189, 248, 0.15)' : 'rgba(15, 23, 42, 0.7)',
+                    color: activePane === 'main' ? '#38bdf8' : '#64748b',
+                    border: activePane === 'main' ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid #1e2638',
+                    pointerEvents: 'none',
+                    backdropFilter: 'blur(8px)',
+                  }}
+                >
+                  <span
+                    style={{
+                      width: '6px',
+                      height: '6px',
+                      borderRadius: '50%',
+                      background: activePane === 'main' ? '#38bdf8' : '#64748b',
+                    }}
+                  />
+                  <span>主终端</span>
+                </div>
+              )}
               <TerminalSearch
-                visible={showSearch && activePane === 'main'}
+                visible={showSearch && (activePane === 'main' || !isSplitScreen)}
                 searchAddon={mainSearchAddon.current}
                 onClose={() => setShowSearch(false)}
               />
@@ -2165,7 +2328,10 @@ export function App() {
               <div
                 ref={splitTermRef}
                 className="terminal-container"
-                onClick={() => setActivePane('split')}
+                onClick={() => {
+                  setActivePane('split');
+                  splitXterm.current?.focus();
+                }}
                 style={{
                   position: 'relative',
                   flex: 1,
@@ -2173,9 +2339,55 @@ export function App() {
                   height: '100%',
                   overflow: 'hidden',
                   background: '#070a10',
-                  boxShadow: activePane === 'split' ? 'inset 0 0 0 1px rgba(16, 185, 129, 0.4)' : 'none',
+                  boxShadow: activePane === 'split' ? 'inset 0 0 0 1px rgba(16, 185, 129, 0.45)' : 'none',
                 }}
               >
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '6px',
+                    left: '12px',
+                    zIndex: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    background: activePane === 'split' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(15, 23, 42, 0.7)',
+                    color: activePane === 'split' ? '#34d399' : '#64748b',
+                    border: activePane === 'split' ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid #1e2638',
+                    backdropFilter: 'blur(8px)',
+                  }}
+                >
+                  <span
+                    style={{
+                      width: '6px',
+                      height: '6px',
+                      borderRadius: '50%',
+                      background: activePane === 'split' ? '#10b981' : '#64748b',
+                    }}
+                  />
+                  <span>分屏终端</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleSplitScreen();
+                    }}
+                    style={{
+                      marginLeft: '4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      color: '#94a3b8',
+                      cursor: 'pointer',
+                      padding: '1px',
+                    }}
+                    title="关闭分屏终端 (⌘D)"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
                 <TerminalSearch
                   visible={showSearch && activePane === 'split'}
                   searchAddon={splitSearchAddon.current}
