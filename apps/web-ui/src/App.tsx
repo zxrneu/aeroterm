@@ -55,9 +55,11 @@ interface TabItem {
   id: string;
   name: string;
   type: 'local' | 'ssh';
+  connectionId?: string;
   host?: string;
   port?: number;
   user?: string;
+  isSplit?: boolean;
 }
 
 interface EditingFile {
@@ -95,14 +97,17 @@ export function App() {
 
   // Tabs Management
   const [tabs, setTabs] = useState<TabItem[]>([
-    { id: 'local-1', name: 'Local (zsh)', type: 'local' },
+    { id: 'local-1', name: 'Local (zsh)', type: 'local', isSplit: false },
   ]);
   const [activeTabId, setActiveTabId] = useState<string>('local-1');
   const [showAddTabMenu, setShowAddTabMenu] = useState(false);
 
-  // Split Screen
-  const [isSplitScreen, setIsSplitScreen] = useState(false);
-  const [splitTabId] = useState<string>('local-split');
+  // Active Tab & Dynamic Split Screen (supports SSH & same host split)
+  const currentTab = tabs.find((t) => t.id === activeTabId) || tabs[0] || { id: 'local-1', name: 'Local (zsh)', type: 'local', isSplit: false };
+  const isSplitScreen = Boolean(currentTab?.isSplit);
+  const splitTabId = currentTab?.type === 'ssh'
+    ? `ssh_${currentTab.connectionId || 'conn'}_split_${currentTab.id}`
+    : `local_split_${currentTab.id}`;
 
   // Terminals Refs & Instances
   const mainTermRef = useRef<HTMLDivElement>(null);
@@ -276,6 +281,7 @@ export function App() {
       id: `local-${Date.now()}`,
       name: `Local (${nextIdx})`,
       type: 'local',
+      isSplit: false,
     };
     setTabs((prev) => [...prev, newTab]);
     setActiveTabId(newTab.id);
@@ -283,34 +289,43 @@ export function App() {
   };
 
   const handleConnectHost = (c: SavedConnection) => {
-    const existing = tabs.find((t) => t.id === c.id || t.name === c.name);
-    if (existing) {
-      setActiveTabId(existing.id);
-    } else {
-      const newTab: TabItem = {
-        id: c.id,
-        name: c.name,
-        type: 'ssh',
-        host: c.host,
-        port: c.port,
-        user: c.username,
-      };
-      setTabs((prev) => [...prev, newTab]);
-      setActiveTabId(newTab.id);
-    }
+    const timestamp = Date.now();
+    const sameHostTabs = tabs.filter((t) => t.connectionId === c.id || t.name === c.name || t.name.startsWith(`${c.name} (`));
+    const tabName = sameHostTabs.length > 0 ? `${c.name} (${sameHostTabs.length + 1})` : c.name;
+    const tabId = `ssh_${c.id}_${timestamp}`;
+    const newTab: TabItem = {
+      id: tabId,
+      name: tabName,
+      type: 'ssh',
+      connectionId: c.id,
+      host: c.host,
+      port: c.port,
+      user: c.username,
+      isSplit: false,
+    };
+    setTabs((prev) => [...prev, newTab]);
+    setActiveTabId(newTab.id);
     setShowConnModal(false);
     setShowAddTabMenu(false);
+    setShortcutToast(`已建立 SSH 连接: ${tabName}`);
   };
 
   const handleCloseTab = (tabId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (tabs.length <= 1) return; // Keep at least one tab
+    const tabToClose = tabs.find((t) => t.id === tabId);
     const nextTabs = tabs.filter((t) => t.id !== tabId);
     setTabs(nextTabs);
     if (activeTabId === tabId) {
       setActiveTabId(nextTabs[nextTabs.length - 1].id);
     }
     fetch(`${apiBase}/api/sessions/${tabId}`, { method: 'DELETE' }).catch(() => {});
+    if (tabToClose?.isSplit) {
+      const splitId = tabToClose.type === 'ssh'
+        ? `ssh_${tabToClose.connectionId || 'conn'}_split_${tabToClose.id}`
+        : `local_split_${tabToClose.id}`;
+      fetch(`${apiBase}/api/sessions/${splitId}`, { method: 'DELETE' }).catch(() => {});
+    }
   };
 
   // State synchronization refs for event handlers to prevent stale closures
@@ -354,6 +369,12 @@ export function App() {
     const newIdx = Math.max(0, currentIdx - 1);
     setActiveTabId(nextTabs[newIdx].id);
     fetch(`${apiBase}/api/sessions/${tabToClose.id}`, { method: 'DELETE' }).catch(() => {});
+    if (tabToClose?.isSplit) {
+      const splitId = tabToClose.type === 'ssh'
+        ? `ssh_${tabToClose.connectionId || 'conn'}_split_${tabToClose.id}`
+        : `local_split_${tabToClose.id}`;
+      fetch(`${apiBase}/api/sessions/${splitId}`, { method: 'DELETE' }).catch(() => {});
+    }
     setShortcutToast(`已关闭标签: ${tabToClose.name}`);
   }, [apiBase]);
 
@@ -408,17 +429,50 @@ export function App() {
     setShortcutToast('终端字号恢复默认 (14px)');
   }, []);
 
-  const handleToggleSplitScreen = useCallback(() => {
-    setIsSplitScreen((prev) => {
-      const next = !prev;
-      if (!next) {
-        setActivePane('main');
-        setTimeout(() => mainXterm.current?.focus(), 50);
-      }
-      setShortcutToast(next ? '开启双屏分屏终端' : '已关闭分屏终端');
-      return next;
+  const handleCloseSplitPane = useCallback(() => {
+    setTabs((prevTabs) => {
+      const curId = activeTabIdRef.current;
+      return prevTabs.map((t) => {
+        if (t.id === curId && t.isSplit) {
+          setActivePane('main');
+          setTimeout(() => mainXterm.current?.focus(), 50);
+          const splitId = t.type === 'ssh'
+            ? `ssh_${t.connectionId || 'conn'}_split_${t.id}`
+            : `local_split_${t.id}`;
+          fetch(`${apiBase}/api/sessions/${splitId}`, { method: 'DELETE' }).catch(() => {});
+          setShortcutToast('已关闭分屏终端');
+          return { ...t, isSplit: false };
+        }
+        return t;
+      });
     });
-  }, []);
+  }, [apiBase]);
+
+  const handleToggleSplitScreen = useCallback(() => {
+    setTabs((prevTabs) => {
+      const curId = activeTabIdRef.current;
+      return prevTabs.map((t) => {
+        if (t.id === curId) {
+          const nextSplit = !t.isSplit;
+          if (!nextSplit) {
+            setActivePane('main');
+            setTimeout(() => mainXterm.current?.focus(), 50);
+            const splitId = t.type === 'ssh'
+              ? `ssh_${t.connectionId || 'conn'}_split_${t.id}`
+              : `local_split_${t.id}`;
+            fetch(`${apiBase}/api/sessions/${splitId}`, { method: 'DELETE' }).catch(() => {});
+          }
+          setShortcutToast(
+            nextSplit
+              ? (t.type === 'ssh' ? `已开启同主机 SSH 分屏 (${t.name})` : '已开启终端双屏分屏')
+              : '已关闭分屏终端'
+          );
+          return { ...t, isSplit: nextSplit };
+        }
+        return t;
+      });
+    });
+  }, [apiBase]);
 
   const handleSwitchPaneFocus = useCallback(() => {
     if (!isSplitScreenRef.current) {
@@ -1224,7 +1278,8 @@ export function App() {
     // Connect WebSocket
     let socket: WebSocket | null = null;
     try {
-      socket = new WebSocket(`${wsBase}/ws/terminal/${activeTabId}`);
+      const connParam = currentTab?.connectionId ? `?conn_id=${encodeURIComponent(currentTab.connectionId)}` : '';
+      socket = new WebSocket(`${wsBase}/ws/terminal/${activeTabId}${connParam}`);
       socket.binaryType = 'arraybuffer';
       mainWsRef.current = socket;
 
@@ -1322,12 +1377,18 @@ export function App() {
 
     let socket: WebSocket | null = null;
     try {
-      socket = new WebSocket(`${wsBase}/ws/terminal/${splitTabId}`);
+      const connParam = currentTab?.connectionId ? `?conn_id=${encodeURIComponent(currentTab.connectionId)}` : '';
+      socket = new WebSocket(`${wsBase}/ws/terminal/${splitTabId}${connParam}`);
       socket.binaryType = 'arraybuffer';
       splitWsRef.current = socket;
 
       socket.onopen = () => {
         socket?.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      };
+
+      socket.onclose = () => {
+        // Automatically close the split pane when the remote shell process exits
+        handleCloseSplitPane();
       };
 
       socket.onmessage = (event) => {
@@ -1362,14 +1423,17 @@ export function App() {
     return () => {
       clearTimeout(initialFitTimer);
       window.removeEventListener('resize', handleResize);
-      if (socket) socket.close();
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      }
       splitSearchAddon.current = null;
       splitFitAddon.current = null;
       splitXterm.current = null;
       splitWsRef.current = null;
       term.dispose();
     };
-  }, [isSplitScreen, splitTabId, wsBase, handleTerminalKeyEvent]);
+  }, [isSplitScreen, splitTabId, wsBase, handleTerminalKeyEvent, handleCloseSplitPane]);
 
   // Execute Quick Command
   const runQuickCommand = (cmd: string) => {
@@ -2313,7 +2377,11 @@ export function App() {
                       background: activePane === 'main' ? '#38bdf8' : '#64748b',
                     }}
                   />
-                  <span>主终端</span>
+                  <span>
+                    {currentTab?.type === 'ssh'
+                      ? `主终端: ${currentTab.name} (${currentTab.host || 'SSH'})`
+                      : `主终端: ${currentTab?.name || 'Local'}`}
+                  </span>
                 </div>
               )}
               <TerminalSearch
@@ -2369,23 +2437,29 @@ export function App() {
                       background: activePane === 'split' ? '#10b981' : '#64748b',
                     }}
                   />
-                  <span>分屏终端</span>
+                  <span>
+                    {currentTab?.type === 'ssh'
+                      ? `分屏: 同主机 SSH (${currentTab.name})`
+                      : '分屏终端 (Local)'}
+                  </span>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleToggleSplitScreen();
+                      handleCloseSplitPane();
                     }}
                     style={{
-                      marginLeft: '4px',
+                      marginLeft: '6px',
                       display: 'flex',
                       alignItems: 'center',
                       color: '#94a3b8',
                       cursor: 'pointer',
-                      padding: '1px',
+                      padding: '2px',
+                      borderRadius: '4px',
+                      background: 'rgba(255, 255, 255, 0.08)',
                     }}
-                    title="关闭分屏终端 (⌘D)"
+                    title="关闭分屏窗口 (⌘D / 输入 exit)"
                   >
-                    <X size={11} />
+                    <X size={12} />
                   </button>
                 </div>
                 <TerminalSearch

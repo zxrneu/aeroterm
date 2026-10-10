@@ -545,9 +545,15 @@ async fn sftp_mkdir(
     }
 }
 
+#[derive(Deserialize, Default)]
+pub struct WsTerminalQuery {
+    pub conn_id: Option<String>,
+}
+
 async fn ws_terminal_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<WsTerminalQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
     let session = match state.session_mgr.get_session(&id).await {
@@ -555,12 +561,58 @@ async fn ws_terminal_handler(
         None => {
             // Check if id corresponds to a saved connection
             let mut matched_conn = None;
-            if let Ok(uuid) = Uuid::parse_str(&id) {
-                matched_conn = state.inventory_mgr.get(uuid).await;
+
+            // 1. Explicit conn_id query param
+            if let Some(cid) = query.conn_id.as_deref() {
+                if let Ok(uuid) = Uuid::parse_str(cid) {
+                    matched_conn = state.inventory_mgr.get(uuid).await;
+                }
+                if matched_conn.is_none() {
+                    for c in state.inventory_mgr.list().await {
+                        if c.name == cid {
+                            matched_conn = Some(c);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 2. Direct UUID match
+            if matched_conn.is_none() {
+                if let Ok(uuid) = Uuid::parse_str(&id) {
+                    matched_conn = state.inventory_mgr.get(uuid).await;
+                }
+            }
+
+            // 3. Composite ID matching (e.g. ssh_{uuid}_{timestamp} or ssh_{uuid}_split_{timestamp})
+            if matched_conn.is_none() {
+                for part in id.split('_') {
+                    if let Ok(uuid) = Uuid::parse_str(part) {
+                        if let Some(conn) = state.inventory_mgr.get(uuid).await {
+                            matched_conn = Some(conn);
+                            break;
+                        }
+                    }
+                }
             }
             if matched_conn.is_none() {
+                for part in id.split("::") {
+                    if let Ok(uuid) = Uuid::parse_str(part) {
+                        if let Some(conn) = state.inventory_mgr.get(uuid).await {
+                            matched_conn = Some(conn);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 4. Name match or prefix match
+            if matched_conn.is_none() {
                 for c in state.inventory_mgr.list().await {
-                    if c.name == id {
+                    if c.name == id
+                        || id.starts_with(&format!("{}_", c.name))
+                        || id.starts_with(&format!("ssh_{}_", c.name))
+                    {
                         matched_conn = Some(c);
                         break;
                     }
