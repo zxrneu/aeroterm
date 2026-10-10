@@ -14,6 +14,7 @@
 - **AI 原生与 MCP 互联**：内置 AI 诊断助手，支持标准 Model Context Protocol (Streamable HTTP) 本地服务与安全交互确认。
 - **零知识加密金库**：Argon2id + AES-256-GCM 端到端加密，内存零化脱敏（Zeroize）。
 
-## 项目文档与研发排期
-详细的技术路线选型、全景功能矩阵架构设计及 16 周研发具体排期（M0 ~ M5 里程碑），请查阅：
-👉 [产品技术路线与实施排期 (doc/product_roadmap_and_schedule.md)](doc/product_roadmap_and_schedule.md)
+## 项目文档与指南
+- 📖 [常用键盘快捷键指南 (doc/keyboard_shortcuts.md)](doc/keyboard_shortcuts.md)
+- 🗺️ [产品技术路线与实施排期 (doc/product_roadmap_and_schedule.md)](doc/product_roadmap_and_schedule.md)
+

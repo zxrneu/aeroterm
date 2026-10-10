@@ -2,20 +2,25 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { SearchAddon } from '@xterm/addon-search';
 import {
   Activity,
   Bot,
   Check,
   Code,
+  Command,
   FileText,
   FolderPlus,
   FolderTree,
+  Keyboard,
   Network,
   Play,
   Plus,
   Radio,
   RefreshCw,
+  RotateCcw,
   Save,
+  Search,
   Server,
   Settings,
   Shield,
@@ -26,7 +31,14 @@ import {
   Video,
   X,
   Zap,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
+import { CommandPalette, type CommandItem } from './components/CommandPalette';
+import { ShortcutsModal } from './components/ShortcutsModal';
+import { TerminalSearch } from './components/TerminalSearch';
+import { ShortcutToast } from './components/ShortcutToast';
+
 
 interface SavedConnection {
   id: string;
@@ -99,6 +111,23 @@ export function App() {
   const splitXterm = useRef<Terminal | null>(null);
   const mainFitAddon = useRef<FitAddon | null>(null);
   const splitFitAddon = useRef<FitAddon | null>(null);
+  const mainSearchAddon = useRef<SearchAddon | null>(null);
+  const splitSearchAddon = useRef<SearchAddon | null>(null);
+
+  // Terminal Customization & Shortcuts
+  const [fontSize, setFontSize] = useState<number>(14);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [shortcutToast, setShortcutToast] = useState<string | null>(null);
+  const [activePane, setActivePane] = useState<'main' | 'split'>('main');
+
+  const isMac = Boolean(
+    typeof navigator !== 'undefined' && (
+      (navigator.userAgent && navigator.userAgent.includes('Mac')) ||
+      (navigator.platform && navigator.platform.includes('Mac'))
+    )
+  );
 
   // WebSockets
   const mainWsRef = useRef<WebSocket | null>(null);
@@ -284,6 +313,151 @@ export function App() {
     fetch(`${apiBase}/api/sessions/${tabId}`, { method: 'DELETE' }).catch(() => {});
   };
 
+  // State synchronization refs for event handlers to prevent stale closures
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
+  const broadcastEnabledRef = useRef(broadcastEnabled);
+  broadcastEnabledRef.current = broadcastEnabled;
+  const isSplitScreenRef = useRef(isSplitScreen);
+  isSplitScreenRef.current = isSplitScreen;
+  const activeDrawerRef = useRef(activeDrawer);
+  activeDrawerRef.current = activeDrawer;
+  const showSearchRef = useRef(showSearch);
+  showSearchRef.current = showSearch;
+  const showCommandPaletteRef = useRef(showCommandPalette);
+  showCommandPaletteRef.current = showCommandPalette;
+  const showShortcutsModalRef = useRef(showShortcutsModal);
+  showShortcutsModalRef.current = showShortcutsModal;
+  const showConnModalRef = useRef(showConnModal);
+  showConnModalRef.current = showConnModal;
+  const activePaneRef = useRef(activePane);
+  activePaneRef.current = activePane;
+  const editingFileRef = useRef(editingFile);
+  editingFileRef.current = editingFile;
+
+  // Shortcut Actions
+  const handleCloseActiveTab = useCallback(() => {
+    const currentTabs = tabsRef.current;
+    if (currentTabs.length <= 1) {
+      setShortcutToast('至少保留一个终端标签页');
+      return;
+    }
+    const currentId = activeTabIdRef.current;
+    const currentIdx = currentTabs.findIndex((t) => t.id === currentId);
+    const tabToClose = currentTabs[currentIdx];
+    const nextTabs = currentTabs.filter((t) => t.id !== currentId);
+    setTabs(nextTabs);
+    const newIdx = Math.max(0, currentIdx - 1);
+    setActiveTabId(nextTabs[newIdx].id);
+    fetch(`${apiBase}/api/sessions/${tabToClose.id}`, { method: 'DELETE' }).catch(() => {});
+    setShortcutToast(`已关闭标签: ${tabToClose.name}`);
+  }, [apiBase]);
+
+  const handleNextTab = useCallback(() => {
+    const currentTabs = tabsRef.current;
+    if (currentTabs.length <= 1) return;
+    const currentIdx = currentTabs.findIndex((t) => t.id === activeTabIdRef.current);
+    if (currentIdx !== -1) {
+      const nextIdx = (currentIdx + 1) % currentTabs.length;
+      setActiveTabId(currentTabs[nextIdx].id);
+      setShortcutToast(`切换标签: ${currentTabs[nextIdx].name}`);
+    }
+  }, []);
+
+  const handlePrevTab = useCallback(() => {
+    const currentTabs = tabsRef.current;
+    if (currentTabs.length <= 1) return;
+    const currentIdx = currentTabs.findIndex((t) => t.id === activeTabIdRef.current);
+    if (currentIdx !== -1) {
+      const prevIdx = (currentIdx - 1 + currentTabs.length) % currentTabs.length;
+      setActiveTabId(currentTabs[prevIdx].id);
+      setShortcutToast(`切换标签: ${currentTabs[prevIdx].name}`);
+    }
+  }, []);
+
+  const handleJumpToTab = useCallback((index: number) => {
+    const currentTabs = tabsRef.current;
+    if (index >= 0 && index < currentTabs.length) {
+      setActiveTabId(currentTabs[index].id);
+      setShortcutToast(`跳转标签: ${currentTabs[index].name}`);
+    }
+  }, []);
+
+  const handleZoomIn = useCallback(() => {
+    setFontSize((prev) => {
+      const next = Math.min(32, prev + 1);
+      setShortcutToast(`终端字号: ${next}px`);
+      return next;
+    });
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    setFontSize((prev) => {
+      const next = Math.max(10, prev - 1);
+      setShortcutToast(`终端字号: ${next}px`);
+      return next;
+    });
+  }, []);
+
+  const handleZoomReset = useCallback(() => {
+    setFontSize(14);
+    setShortcutToast('终端字号恢复默认 (14px)');
+  }, []);
+
+  const handlePasteToActive = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return;
+      const targetWs = activePaneRef.current === 'split' ? splitWsRef.current : mainWsRef.current;
+      const targetTerm = activePaneRef.current === 'split' ? splitXterm.current : mainXterm.current;
+      if (targetWs && targetWs.readyState === WebSocket.OPEN) {
+        if (broadcastEnabledRef.current) {
+          targetWs.send(JSON.stringify({ type: 'broadcast', data: text }));
+        } else {
+          targetWs.send(JSON.stringify({ type: 'input', data: text }));
+        }
+      } else if (targetTerm) {
+        targetTerm.paste(text);
+      }
+      setShortcutToast('已粘贴剪贴板内容');
+    } catch {
+      setShortcutToast('无法读取剪贴板内容');
+    }
+  }, []);
+
+  // Sync font size changes with xterm instances and resize websocket
+  useEffect(() => {
+    if (mainXterm.current) {
+      mainXterm.current.options.fontSize = fontSize;
+      mainFitAddon.current?.fit();
+      if (mainWsRef.current?.readyState === WebSocket.OPEN) {
+        mainWsRef.current.send(
+          JSON.stringify({
+            type: 'resize',
+            cols: mainXterm.current.cols,
+            rows: mainXterm.current.rows,
+          })
+        );
+      }
+    }
+    if (splitXterm.current) {
+      splitXterm.current.options.fontSize = fontSize;
+      splitFitAddon.current?.fit();
+      if (splitWsRef.current?.readyState === WebSocket.OPEN) {
+        splitWsRef.current.send(
+          JSON.stringify({
+            type: 'resize',
+            cols: splitXterm.current.cols,
+            rows: splitXterm.current.rows,
+          })
+        );
+      }
+    }
+  }, [fontSize]);
+
+
   // Recording Timer
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -353,6 +527,410 @@ export function App() {
     fetchMetrics();
     return () => clearInterval(timer);
   }, [apiBase]);
+
+  // Handle Keyboard Event from xterm instances
+  const handleTerminalKeyEvent = useCallback(
+    (e: KeyboardEvent, term: Terminal, isSplit: boolean): boolean => {
+      if (e.type !== 'keydown') return true;
+
+      const isCtrlOrMeta = e.metaKey || e.ctrlKey;
+
+      // 1. Copy: Cmd+C (Mac) or Ctrl+Shift+C (Win)
+      if (
+        (isMac && e.metaKey && (e.key === 'c' || e.key === 'C')) ||
+        (!isMac && e.ctrlKey && e.shiftKey && (e.key === 'c' || e.key === 'C'))
+      ) {
+        if (term.hasSelection()) {
+          const text = term.getSelection();
+          navigator.clipboard.writeText(text).catch(() => {});
+          setShortcutToast(`已复制选中文本 (${isMac ? '⌘C' : 'Ctrl+Shift+C'})`);
+          return false; // Intercept: do not send SIGINT to PTY!
+        }
+        return true; // No selection: let SIGINT (^C) pass to shell
+      }
+
+      // 2. Paste: Cmd+V (Mac) or Ctrl+Shift+V / Ctrl+V
+      if (
+        (isMac && e.metaKey && (e.key === 'v' || e.key === 'V')) ||
+        (e.ctrlKey && e.shiftKey && (e.key === 'v' || e.key === 'V'))
+      ) {
+        handlePasteToActive();
+        return false;
+      }
+
+      // 3. Clear Screen: Cmd+K / Ctrl+K
+      if (isCtrlOrMeta && (e.key === 'k' || e.key === 'K')) {
+        term.clear();
+        setShortcutToast(`终端屏幕已清空 (${isMac ? '⌘K' : 'Ctrl+K'})`);
+        return false;
+      }
+
+      // 4. Select All: Cmd+A (Mac) or Ctrl+Shift+A (Win)
+      if (
+        (isMac && e.metaKey && (e.key === 'a' || e.key === 'A')) ||
+        (!isMac && e.ctrlKey && e.shiftKey && (e.key === 'a' || e.key === 'A'))
+      ) {
+        term.selectAll();
+        setShortcutToast('已全选终端内容');
+        return false;
+      }
+
+      // 5. In-Terminal Search: Cmd+F / Ctrl+F
+      if (isCtrlOrMeta && (e.key === 'f' || e.key === 'F')) {
+        setActivePane(isSplit ? 'split' : 'main');
+        setShowSearch((prev) => !prev);
+        return false;
+      }
+
+      // 6. Command Palette: Cmd+P / Ctrl+P
+      if (isCtrlOrMeta && (e.key === 'p' || e.key === 'P')) {
+        setShowCommandPalette((prev) => !prev);
+        return false;
+      }
+
+      // 7. Shortcuts Cheat Sheet: Cmd+/ or Ctrl+/
+      if (isCtrlOrMeta && e.key === '/') {
+        setShowShortcutsModal((prev) => !prev);
+        return false;
+      }
+
+      // 8. New Tab: Cmd+T / Ctrl+T
+      if (isCtrlOrMeta && (e.key === 't' || e.key === 'T')) {
+        handleAddLocalTab();
+        setShortcutToast(`新建系统终端标签 (${isMac ? '⌘T' : 'Ctrl+T'})`);
+        return false;
+      }
+
+      // 9. Close Tab: Cmd+W / Ctrl+W
+      if (isCtrlOrMeta && (e.key === 'w' || e.key === 'W')) {
+        handleCloseActiveTab();
+        return false;
+      }
+
+      // 10. Split Screen: Cmd+D / Ctrl+Shift+D
+      if (
+        (isMac && e.metaKey && (e.key === 'd' || e.key === 'D')) ||
+        (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D'))
+      ) {
+        setIsSplitScreen((prev) => !prev);
+        setShortcutToast(`切换双屏分屏 (${isMac ? '⌘D' : 'Ctrl+Shift+D'})`);
+        return false;
+      }
+
+      // 11. Switch Pane Focus: Alt+ArrowLeft / Alt+ArrowRight / Alt+O
+      if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'o' || e.key === 'O')) {
+        setActivePane((prev) => (prev === 'main' ? 'split' : 'main'));
+        setShortcutToast('切换分屏焦点');
+        return false;
+      }
+
+      // 12. Zoom: Cmd+= / Cmd+- / Cmd+0
+      if (isCtrlOrMeta && (e.key === '=' || e.key === '+')) {
+        handleZoomIn();
+        return false;
+      }
+      if (isCtrlOrMeta && (e.key === '-' || e.key === '_')) {
+        handleZoomOut();
+        return false;
+      }
+      if (isCtrlOrMeta && e.key === '0') {
+        handleZoomReset();
+        return false;
+      }
+
+      // 13. Jump to Tab: Cmd+1~9 / Ctrl+1~9
+      if (isCtrlOrMeta && /^[1-9]$/.test(e.key)) {
+        const idx = parseInt(e.key, 10) - 1;
+        handleJumpToTab(idx);
+        return false;
+      }
+
+      // 14. Next / Prev Tab: Ctrl+Tab or Cmd+Option+Arrows
+      if (e.ctrlKey && e.key === 'Tab') {
+        if (e.shiftKey) {
+          handlePrevTab();
+        } else {
+          handleNextTab();
+        }
+        return false;
+      }
+      if (isMac && e.metaKey && e.altKey) {
+        if (e.key === 'ArrowRight') {
+          handleNextTab();
+          return false;
+        }
+        if (e.key === 'ArrowLeft') {
+          handlePrevTab();
+          return false;
+        }
+      }
+
+      // 15. Tools Drawers: Alt+1 / Alt+2 / Alt+3 / Alt+4
+      if (e.altKey && e.key === '1') {
+        setActiveDrawer((prev) => (prev === 'monitor' ? null : 'monitor'));
+        return false;
+      }
+      if (e.altKey && e.key === '2') {
+        setActiveDrawer((prev) => (prev === 'sftp' ? null : 'sftp'));
+        return false;
+      }
+      if (e.altKey && e.key === '3') {
+        setActiveDrawer((prev) => (prev === 'tunnels' ? null : 'tunnels'));
+        return false;
+      }
+      if (e.altKey && e.key === '4') {
+        setActiveDrawer((prev) => (prev === 'ai' ? null : 'ai'));
+        return false;
+      }
+
+      // 16. Hosts / Assets Center: Cmd+O / Ctrl+O
+      if (isCtrlOrMeta && (e.key === 'o' || e.key === 'O')) {
+        setShowConnModal((prev) => !prev);
+        return false;
+      }
+
+      // 17. Broadcast: Cmd+B
+      if (isCtrlOrMeta && (e.key === 'b' || e.key === 'B')) {
+        setBroadcastEnabled((prev) => !prev);
+        setShortcutToast(!broadcastEnabledRef.current ? '广播输入模式: 已开启' : '广播输入模式: 已关闭');
+        return false;
+      }
+
+      // 18. Recording: Cmd+Shift+R / Ctrl+Alt+R
+      if (isCtrlOrMeta && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+        toggleRecording();
+        return false;
+      }
+
+      // 19. Escape
+      if (e.key === 'Escape') {
+        if (showSearchRef.current) {
+          setShowSearch(false);
+          return false;
+        }
+        if (showCommandPaletteRef.current) {
+          setShowCommandPalette(false);
+          return false;
+        }
+        if (showShortcutsModalRef.current) {
+          setShowShortcutsModal(false);
+          return false;
+        }
+      }
+
+      return true;
+    },
+    [
+      isMac,
+      handleAddLocalTab,
+      handleCloseActiveTab,
+      handleJumpToTab,
+      handleNextTab,
+      handlePrevTab,
+      handleZoomIn,
+      handleZoomOut,
+      handleZoomReset,
+      handlePasteToActive,
+      toggleRecording,
+    ]
+  );
+
+  // Global Keyboard Shortcuts Listener
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      const isInInput =
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          (activeEl as HTMLElement).isContentEditable);
+
+      const isCtrlOrMeta = e.metaKey || e.ctrlKey;
+
+      // Escape always handles modals first
+      if (e.key === 'Escape') {
+        if (showSearchRef.current) {
+          setShowSearch(false);
+          e.preventDefault();
+          return;
+        }
+        if (showCommandPaletteRef.current) {
+          setShowCommandPalette(false);
+          e.preventDefault();
+          return;
+        }
+        if (showShortcutsModalRef.current) {
+          setShowShortcutsModal(false);
+          e.preventDefault();
+          return;
+        }
+        if (showConnModalRef.current) {
+          setShowConnModal(false);
+          e.preventDefault();
+          return;
+        }
+        if (editingFileRef.current) {
+          setEditingFile(null);
+          e.preventDefault();
+          return;
+        }
+        if (activeDrawerRef.current) {
+          setActiveDrawer(null);
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // Command Palette (Cmd+P / Ctrl+P)
+      if (isCtrlOrMeta && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        setShowCommandPalette((prev) => !prev);
+        return;
+      }
+
+      // Shortcuts help (Cmd+/ or Ctrl+/ or ? when not typing in text field)
+      if (
+        (isCtrlOrMeta && e.key === '/') ||
+        (!isInInput && !isCtrlOrMeta && e.key === '?')
+      ) {
+        e.preventDefault();
+        setShowShortcutsModal((prev) => !prev);
+        return;
+      }
+
+      // In-Terminal Search (Cmd+F / Ctrl+F)
+      if (isCtrlOrMeta && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        setShowSearch((prev) => !prev);
+        return;
+      }
+
+      // New Tab (Cmd+T / Ctrl+T)
+      if (isCtrlOrMeta && (e.key === 't' || e.key === 'T')) {
+        e.preventDefault();
+        handleAddLocalTab();
+        setShortcutToast(`新建系统终端标签 (${isMac ? '⌘T' : 'Ctrl+T'})`);
+        return;
+      }
+
+      // Close Tab (Cmd+W / Ctrl+W)
+      if (isCtrlOrMeta && (e.key === 'w' || e.key === 'W') && !isInInput) {
+        e.preventDefault();
+        handleCloseActiveTab();
+        return;
+      }
+
+      // Split Screen (Cmd+D / Ctrl+Shift+D)
+      if (
+        (isMac && e.metaKey && (e.key === 'd' || e.key === 'D')) ||
+        (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D'))
+      ) {
+        e.preventDefault();
+        setIsSplitScreen((prev) => !prev);
+        setShortcutToast(`切换双屏分屏 (${isMac ? '⌘D' : 'Ctrl+Shift+D'})`);
+        return;
+      }
+
+      // Zoom (Cmd+= / Cmd+- / Cmd+0)
+      if (isCtrlOrMeta && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        handleZoomIn();
+        return;
+      }
+      if (isCtrlOrMeta && (e.key === '-' || e.key === '_')) {
+        e.preventDefault();
+        handleZoomOut();
+        return;
+      }
+      if (isCtrlOrMeta && e.key === '0') {
+        e.preventDefault();
+        handleZoomReset();
+        return;
+      }
+
+      // Next / Prev Tab
+      if (e.ctrlKey && e.key === 'Tab') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handlePrevTab();
+        } else {
+          handleNextTab();
+        }
+        return;
+      }
+      if (isMac && e.metaKey && e.altKey) {
+        if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          handleNextTab();
+          return;
+        }
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          handlePrevTab();
+          return;
+        }
+      }
+
+      // Tab jump (Cmd+1~9)
+      if (isCtrlOrMeta && /^[1-9]$/.test(e.key) && !isInInput) {
+        e.preventDefault();
+        const idx = parseInt(e.key, 10) - 1;
+        handleJumpToTab(idx);
+        return;
+      }
+
+      // Tool drawers (Alt+1 ~ 4)
+      if (e.altKey && e.key === '1') {
+        e.preventDefault();
+        setActiveDrawer((prev) => (prev === 'monitor' ? null : 'monitor'));
+        return;
+      }
+      if (e.altKey && e.key === '2') {
+        e.preventDefault();
+        setActiveDrawer((prev) => (prev === 'sftp' ? null : 'sftp'));
+        return;
+      }
+      if (e.altKey && e.key === '3') {
+        e.preventDefault();
+        setActiveDrawer((prev) => (prev === 'tunnels' ? null : 'tunnels'));
+        return;
+      }
+      if (e.altKey && e.key === '4') {
+        e.preventDefault();
+        setActiveDrawer((prev) => (prev === 'ai' ? null : 'ai'));
+        return;
+      }
+
+      // Hosts (Cmd+O / Ctrl+O)
+      if (isCtrlOrMeta && (e.key === 'o' || e.key === 'O') && !isInInput) {
+        e.preventDefault();
+        setShowConnModal((prev) => !prev);
+        return;
+      }
+
+      // Broadcast (Cmd+B)
+      if (isCtrlOrMeta && (e.key === 'b' || e.key === 'B') && !isInInput) {
+        e.preventDefault();
+        setBroadcastEnabled((prev) => !prev);
+        setShortcutToast(!broadcastEnabledRef.current ? '广播输入模式: 已开启' : '广播输入模式: 已关闭');
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [
+    isMac,
+    handleAddLocalTab,
+    handleCloseActiveTab,
+    handleJumpToTab,
+    handleNextTab,
+    handlePrevTab,
+    handleZoomIn,
+    handleZoomOut,
+    handleZoomReset,
+  ]);
+
 
   // SFTP Operations
   const loadSftpList = useCallback(
@@ -510,7 +1088,7 @@ export function App() {
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
-      fontSize: 14,
+      fontSize: fontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace",
       theme: {
         background: '#0a0d14',
@@ -532,6 +1110,10 @@ export function App() {
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    mainSearchAddon.current = searchAddon;
+
     term.open(mainTermRef.current);
     try {
       term.loadAddon(new WebglAddon());
@@ -541,6 +1123,10 @@ export function App() {
     fitAddon.fit();
     mainXterm.current = term;
     mainFitAddon.current = fitAddon;
+
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      return handleTerminalKeyEvent(e, term, false);
+    });
 
     // Connect WebSocket
     let socket: WebSocket | null = null;
@@ -597,9 +1183,10 @@ export function App() {
     return () => {
       window.removeEventListener('resize', handleResize);
       if (socket) socket.close();
+      mainSearchAddon.current = null;
       term.dispose();
     };
-  }, [activeTabId, broadcastEnabled, wsBase]);
+  }, [activeTabId, broadcastEnabled, wsBase, handleTerminalKeyEvent]);
 
   // Split-Screen Terminal Initialization
   useEffect(() => {
@@ -608,7 +1195,7 @@ export function App() {
     const term = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
-      fontSize: 14,
+      fontSize: fontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
       theme: {
         background: '#0a0d14',
@@ -620,10 +1207,18 @@ export function App() {
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    splitSearchAddon.current = searchAddon;
+
     term.open(splitTermRef.current);
     fitAddon.fit();
     splitXterm.current = term;
     splitFitAddon.current = fitAddon;
+
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      return handleTerminalKeyEvent(e, term, true);
+    });
 
     let socket: WebSocket | null = null;
     try {
@@ -658,9 +1253,10 @@ export function App() {
     return () => {
       window.removeEventListener('resize', handleResize);
       if (socket) socket.close();
+      splitSearchAddon.current = null;
       term.dispose();
     };
-  }, [isSplitScreen, splitTabId, wsBase]);
+  }, [isSplitScreen, splitTabId, wsBase, handleTerminalKeyEvent]);
 
   // Execute Quick Command
   const runQuickCommand = (cmd: string) => {
@@ -738,6 +1334,236 @@ export function App() {
       setAiLoading(false);
     }
   };
+
+  // Command Palette Items
+  const paletteCommands: CommandItem[] = [
+    // 快捷运维指令
+    {
+      id: 'cmd-top',
+      category: '运维指令',
+      title: '执行: 进程监控 (top)',
+      description: '查看系统当前高消耗进程占用情况',
+      shortcut: '快捷指令',
+      icon: <Activity size={16} color="#38bdf8" />,
+      action: () => runQuickCommand('top -l 1 | head -n 20'),
+      keywords: ['top', 'process', '进程', 'cpu', '监控'],
+    },
+    {
+      id: 'cmd-lsof',
+      category: '运维指令',
+      title: '执行: 端口监听 (lsof)',
+      description: '查看当前主机正在监听的 TCP 端口',
+      shortcut: '快捷指令',
+      icon: <Network size={16} color="#38bdf8" />,
+      action: () => runQuickCommand('lsof -iTCP -sTCP:LISTEN -n -P'),
+      keywords: ['lsof', 'port', '端口', 'listen'],
+    },
+    {
+      id: 'cmd-df',
+      category: '运维指令',
+      title: '执行: 磁盘空间 (df -h)',
+      description: '查看各分区可用磁盘容量与挂载点',
+      shortcut: '快捷指令',
+      icon: <Server size={16} color="#38bdf8" />,
+      action: () => runQuickCommand('df -h'),
+      keywords: ['df', 'disk', '磁盘', '容量'],
+    },
+    {
+      id: 'cmd-git',
+      category: '运维指令',
+      title: '执行: Git 状态 (git status)',
+      description: '查看当前目录代码变更与分支状态',
+      shortcut: '快捷指令',
+      icon: <TerminalIcon size={16} color="#10b981" />,
+      action: () => runQuickCommand('git status'),
+      keywords: ['git', 'status', '代码', '分支'],
+    },
+    {
+      id: 'cmd-clear',
+      category: '终端操作',
+      title: '清空当前屏幕 (clear)',
+      description: '清空终端屏幕与回滚缓冲区',
+      shortcut: isMac ? '⌘K' : 'Ctrl+K',
+      icon: <Trash2 size={16} color="#f43f5e" />,
+      action: () => {
+        if (mainXterm.current) mainXterm.current.clear();
+        setShortcutToast('终端屏幕已清空');
+      },
+      keywords: ['clear', '清屏', '清空'],
+    },
+
+    // 标签与分屏
+    {
+      id: 'tab-new-cmd',
+      category: '标签管理',
+      title: '新建系统终端标签',
+      description: '创建一个新的本地 zsh/bash 会话',
+      shortcut: isMac ? '⌘T' : 'Ctrl+T',
+      icon: <Plus size={16} color="#10b981" />,
+      action: handleAddLocalTab,
+      keywords: ['new', 'tab', '新建', '终端'],
+    },
+    {
+      id: 'tab-close-cmd',
+      category: '标签管理',
+      title: '关闭当前终端标签',
+      description: '关闭当前激活标签并释放会话',
+      shortcut: isMac ? '⌘W' : 'Ctrl+W',
+      icon: <X size={16} color="#f43f5e" />,
+      action: handleCloseActiveTab,
+      keywords: ['close', 'tab', '关闭'],
+    },
+    {
+      id: 'split-toggle-cmd',
+      category: '分屏管理',
+      title: '切换双屏分屏终端',
+      description: '并排开启或关闭右侧分屏终端',
+      shortcut: isMac ? '⌘D' : 'Ctrl+Shift+D',
+      icon: <SplitSquareVertical size={16} color="#38bdf8" />,
+      action: () => setIsSplitScreen((prev) => !prev),
+      keywords: ['split', '分屏', '双屏'],
+    },
+
+    // 终端查找与视图
+    {
+      id: 'search-cmd',
+      category: '终端查找',
+      title: '在终端中查找文本',
+      description: '呼出终端查找栏并高亮搜索匹配项',
+      shortcut: isMac ? '⌘F' : 'Ctrl+F',
+      icon: <Search size={16} color="#38bdf8" />,
+      action: () => setShowSearch((prev) => !prev),
+      keywords: ['find', 'search', '查找', '搜索'],
+    },
+    {
+      id: 'zoom-in-cmd',
+      category: '视图与字号',
+      title: '增大终端字体',
+      description: '增加终端字体字号 (+1px)',
+      shortcut: isMac ? '⌘+' : 'Ctrl++',
+      icon: <ZoomIn size={16} color="#38bdf8" />,
+      action: handleZoomIn,
+      keywords: ['zoom in', '放大', '字号'],
+    },
+    {
+      id: 'zoom-out-cmd',
+      category: '视图与字号',
+      title: '减小终端字体',
+      description: '减小终端字体字号 (-1px)',
+      shortcut: isMac ? '⌘-' : 'Ctrl+-',
+      icon: <ZoomOut size={16} color="#38bdf8" />,
+      action: handleZoomOut,
+      keywords: ['zoom out', '缩小', '字号'],
+    },
+    {
+      id: 'zoom-reset-cmd',
+      category: '视图与字号',
+      title: '恢复默认终端字号 (14px)',
+      description: '重置终端字体大小',
+      shortcut: isMac ? '⌘0' : 'Ctrl+0',
+      icon: <RotateCcw size={16} color="#94a3b8" />,
+      action: handleZoomReset,
+      keywords: ['reset', '重置', '恢复'],
+    },
+
+    // 侧边栏与工具
+    {
+      id: 'drawer-monitor-cmd',
+      category: '侧边栏',
+      title: '切换服务器实时监控',
+      description: '查看 CPU、内存、网络 IO 等指标',
+      shortcut: '⌥1',
+      icon: <Activity size={16} color="#38bdf8" />,
+      action: () => setActiveDrawer((prev) => (prev === 'monitor' ? null : 'monitor')),
+      keywords: ['monitor', '监控', 'cpu', '内存'],
+    },
+    {
+      id: 'drawer-sftp-cmd',
+      category: '侧边栏',
+      title: '切换 SFTP 文件传输',
+      description: '浏览远程文件、上传下载及在线编辑',
+      shortcut: '⌥2',
+      icon: <FolderTree size={16} color="#38bdf8" />,
+      action: () => setActiveDrawer((prev) => (prev === 'sftp' ? null : 'sftp')),
+      keywords: ['sftp', '文件', '文件传输'],
+    },
+    {
+      id: 'drawer-tunnels-cmd',
+      category: '侧边栏',
+      title: '切换端口转发与隧道',
+      description: '管理本地端口映射与 SOCKS5 代理',
+      shortcut: '⌥3',
+      icon: <Network size={16} color="#38bdf8" />,
+      action: () => setActiveDrawer((prev) => (prev === 'tunnels' ? null : 'tunnels')),
+      keywords: ['tunnels', '端口', '隧道', '转发'],
+    },
+    {
+      id: 'drawer-ai-cmd',
+      category: '侧边栏',
+      title: '切换小易 AI 智能助手',
+      description: '自动分析终端报错、生成管理脚本',
+      shortcut: '⌥4',
+      icon: <Bot size={16} color="#a855f7" />,
+      action: () => setActiveDrawer((prev) => (prev === 'ai' ? null : 'ai')),
+      keywords: ['ai', '小易', '智能助手', 'copilot'],
+    },
+    {
+      id: 'hosts-manager-cmd',
+      category: '主机资产',
+      title: '打开主机资产中心',
+      description: '管理 SSH 主机配置与同步 ~/.ssh/config',
+      shortcut: isMac ? '⌘O' : 'Ctrl+O',
+      icon: <Server size={16} color="#38bdf8" />,
+      action: () => setShowConnModal(true),
+      keywords: ['host', 'ssh', '主机', '资产'],
+    },
+    {
+      id: 'broadcast-cmd',
+      category: '终端操作',
+      title: broadcastEnabled ? '关闭广播输入模式' : '开启广播输入模式',
+      description: '将输入同时分发至全部活跃终端',
+      shortcut: isMac ? '⌘B' : 'Ctrl+Alt+B',
+      icon: <Radio size={16} color="#f43f5e" />,
+      action: () => {
+        setBroadcastEnabled((prev) => !prev);
+        setShortcutToast(!broadcastEnabled ? '广播输入模式: 已开启' : '广播输入模式: 已关闭');
+      },
+      keywords: ['broadcast', '广播', '多终端'],
+    },
+    {
+      id: 'record-cmd',
+      category: '会话录制',
+      title: isRecording ? '停止会话录制并导出' : '开启会话录制 (.cast)',
+      description: '录制终端操作为 Asciinema 播放格式',
+      shortcut: isMac ? '⌘⇧R' : 'Ctrl+Alt+R',
+      icon: <Video size={16} color="#ef4444" />,
+      action: toggleRecording,
+      keywords: ['record', '录制', 'cast', 'asciinema'],
+    },
+    {
+      id: 'shortcuts-help-cmd',
+      category: '帮助',
+      title: '常用快捷键指南',
+      description: '查看 AeroTerm 全量键盘快捷键对照表',
+      shortcut: isMac ? '⌘/' : 'Ctrl+/',
+      icon: <Keyboard size={16} color="#38bdf8" />,
+      action: () => setShowShortcutsModal(true),
+      keywords: ['shortcuts', '快捷键', 'help', '帮助', '指南'],
+    },
+    // 主机列表快速直连
+    ...connections
+      .filter((c) => c.protocol !== 'localpty')
+      .map((c) => ({
+        id: `connect-${c.id}`,
+        category: '主机连接',
+        title: `连接主机: ${c.name} (${c.username}@${c.host}:${c.port})`,
+        description: c.tags?.join(', ') || 'SSH 连接',
+        icon: <Server size={16} color="#38bdf8" />,
+        action: () => handleConnectHost(c),
+        keywords: [c.name, c.host, c.username, 'ssh', 'connect'],
+      })),
+  ];
+
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', background: '#0a0d14' }}>
@@ -929,7 +1755,51 @@ export function App() {
         </div>
 
         {/* Global Controls & Status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* Command Palette Button */}
+          <button
+            onClick={() => setShowCommandPalette(true)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '4px 8px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: 500,
+              background: 'rgba(30, 41, 59, 0.5)',
+              color: '#94a3b8',
+              border: '1px solid #1e2638',
+            }}
+            title={`快速命令面板 (${isMac ? '⌘P' : 'Ctrl+P'})`}
+          >
+            <Command size={13} color="#38bdf8" />
+            <span style={{ fontSize: '11px' }}>命令</span>
+            <kbd style={{ fontSize: '10px', color: '#38bdf8', opacity: 0.85 }}>{isMac ? '⌘P' : 'Ctrl+P'}</kbd>
+          </button>
+
+          {/* Shortcuts Guide Button */}
+          <button
+            onClick={() => setShowShortcutsModal(true)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '4px 8px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: 500,
+              background: 'rgba(30, 41, 59, 0.5)',
+              color: '#94a3b8',
+              border: '1px solid #1e2638',
+            }}
+            title={`常用快捷键指南 (${isMac ? '⌘/' : 'Ctrl+/'})`}
+          >
+            <Keyboard size={13} color="#38bdf8" />
+            <span style={{ fontSize: '11px' }}>快捷键</span>
+            <kbd style={{ fontSize: '10px', color: '#38bdf8', opacity: 0.85 }}>{isMac ? '⌘/' : 'Ctrl+/'}</kbd>
+          </button>
+
           {/* Split Screen Control */}
           <button
             onClick={() => setIsSplitScreen(!isSplitScreen)}
@@ -945,7 +1815,7 @@ export function App() {
               color: isSplitScreen ? '#38bdf8' : '#94a3b8',
               border: isSplitScreen ? '1px solid rgba(56, 189, 248, 0.5)' : '1px solid #1e2638',
             }}
-            title="双屏分屏终端"
+            title={`双屏分屏终端 (${isMac ? '⌘D' : 'Ctrl+Shift+D'})`}
           >
             <SplitSquareVertical size={13} />
             {isSplitScreen ? '分屏中' : '分屏'}
@@ -966,6 +1836,7 @@ export function App() {
               color: isRecording ? '#ef4444' : '#94a3b8',
               border: isRecording ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid #1e2638',
             }}
+            title={`会话录制 (.cast) (${isMac ? '⌘⇧R' : 'Ctrl+Alt+R'})`}
           >
             <Video size={13} />
             {isRecording
@@ -988,6 +1859,7 @@ export function App() {
               color: broadcastEnabled ? '#f43f5e' : '#94a3b8',
               border: broadcastEnabled ? '1px solid rgba(244, 63, 94, 0.4)' : '1px solid #1e2638',
             }}
+            title={`多终端广播输入 (${isMac ? '⌘B' : 'Ctrl+Alt+B'})`}
           >
             <Radio size={13} />
             {broadcastEnabled ? '广播已开启' : '广播输入'}
@@ -1063,7 +1935,7 @@ export function App() {
               color: activeDrawer === 'monitor' ? '#38bdf8' : '#94a3b8',
               background: activeDrawer === 'monitor' ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
             }}
-            title="服务器实时监控"
+            title={`服务器实时监控 (${isMac ? '⌥1' : 'Alt+1'})`}
           >
             <Activity size={18} />
           </button>
@@ -1076,7 +1948,7 @@ export function App() {
               color: activeDrawer === 'sftp' ? '#38bdf8' : '#94a3b8',
               background: activeDrawer === 'sftp' ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
             }}
-            title="SFTP 文件传输"
+            title={`SFTP 文件传输 (${isMac ? '⌥2' : 'Alt+2'})`}
           >
             <FolderTree size={18} />
           </button>
@@ -1089,7 +1961,7 @@ export function App() {
               color: activeDrawer === 'tunnels' ? '#38bdf8' : '#94a3b8',
               background: activeDrawer === 'tunnels' ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
             }}
-            title="端口转发与隧道"
+            title={`端口转发与隧道 (${isMac ? '⌥3' : 'Alt+3'})`}
           >
             <Network size={18} />
           </button>
@@ -1102,12 +1974,24 @@ export function App() {
               color: activeDrawer === 'ai' ? '#a855f7' : '#94a3b8',
               background: activeDrawer === 'ai' ? 'rgba(168, 85, 247, 0.15)' : 'transparent',
             }}
-            title="小易 AI 终端助手"
+            title={`小易 AI 终端助手 (${isMac ? '⌥4' : 'Alt+4'})`}
           >
             <Bot size={18} />
           </button>
 
           <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <button
+              onClick={() => setShowShortcutsModal(true)}
+              style={{
+                padding: '10px',
+                borderRadius: '8px',
+                color: showShortcutsModal ? '#38bdf8' : '#64748b',
+                background: showShortcutsModal ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
+              }}
+              title={`键盘快捷键指南 (${isMac ? '⌘/' : 'Ctrl+/'})`}
+            >
+              <Keyboard size={18} />
+            </button>
             <button
               onClick={() => setShowConnModal(true)}
               style={{
@@ -1115,7 +1999,7 @@ export function App() {
                 borderRadius: '8px',
                 color: '#64748b',
               }}
-              title="主机资产中心"
+              title={`主机资产中心 (${isMac ? '⌘O' : 'Ctrl+O'})`}
             >
               <Server size={18} />
             </button>
@@ -1174,6 +2058,64 @@ export function App() {
               </button>
             ))}
 
+            <div style={{ width: '1px', height: '14px', background: '#1e2638', margin: '0 4px' }} />
+
+            {/* In-Terminal Search Button */}
+            <button
+              onClick={() => setShowSearch((prev) => !prev)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '3px 8px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                background: showSearch ? 'rgba(56, 189, 248, 0.2)' : '#171d2d',
+                color: showSearch ? '#38bdf8' : '#cbd5e1',
+                border: showSearch ? '1px solid rgba(56, 189, 248, 0.4)' : '1px solid #1e2638',
+                whiteSpace: 'nowrap',
+              }}
+              title={`在终端中查找文本 (${isMac ? '⌘F' : 'Ctrl+F'})`}
+            >
+              <Search size={11} /> 查找
+              <kbd style={{ fontSize: '10px', opacity: 0.7 }}>{isMac ? '⌘F' : 'Ctrl+F'}</kbd>
+            </button>
+
+            {/* Terminal Font Zoom Controls */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '2px',
+                background: '#171d2d',
+                padding: '2px 4px',
+                borderRadius: '4px',
+                border: '1px solid #1e2638',
+              }}
+            >
+              <button
+                onClick={handleZoomOut}
+                style={{ color: '#94a3b8', padding: '2px 4px', display: 'flex' }}
+                title={`减小字号 (${isMac ? '⌘-' : 'Ctrl-'})`}
+              >
+                <ZoomOut size={11} />
+              </button>
+              <span
+                onClick={handleZoomReset}
+                style={{ fontSize: '10px', color: '#64748b', cursor: 'pointer', padding: '0 4px' }}
+                title={`恢复默认字号 14px (${isMac ? '⌘0' : 'Ctrl+0'})`}
+              >
+                {fontSize}px
+              </span>
+              <button
+                onClick={handleZoomIn}
+                style={{ color: '#94a3b8', padding: '2px 4px', display: 'flex' }}
+                title={`增大字号 (${isMac ? '⌘+' : 'Ctrl++'})`}
+              >
+                <ZoomIn size={11} />
+              </button>
+            </div>
+
             <button
               onClick={handleDiagnoseError}
               style={{
@@ -1200,28 +2142,46 @@ export function App() {
             <div
               ref={mainTermRef}
               className="terminal-container"
+              onClick={() => setActivePane('main')}
               style={{
+                position: 'relative',
                 flex: 1,
                 width: isSplitScreen ? '50%' : '100%',
                 height: '100%',
                 overflow: 'hidden',
                 borderRight: isSplitScreen ? '1px solid #1e2638' : 'none',
+                boxShadow: isSplitScreen && activePane === 'main' ? 'inset 0 0 0 1px rgba(56, 189, 248, 0.4)' : 'none',
               }}
-            />
+            >
+              <TerminalSearch
+                visible={showSearch && activePane === 'main'}
+                searchAddon={mainSearchAddon.current}
+                onClose={() => setShowSearch(false)}
+              />
+            </div>
 
             {/* Split Screen Terminal */}
             {isSplitScreen && (
               <div
                 ref={splitTermRef}
                 className="terminal-container"
+                onClick={() => setActivePane('split')}
                 style={{
+                  position: 'relative',
                   flex: 1,
                   width: '50%',
                   height: '100%',
                   overflow: 'hidden',
                   background: '#070a10',
+                  boxShadow: activePane === 'split' ? 'inset 0 0 0 1px rgba(16, 185, 129, 0.4)' : 'none',
                 }}
-              />
+              >
+                <TerminalSearch
+                  visible={showSearch && activePane === 'split'}
+                  searchAddon={splitSearchAddon.current}
+                  onClose={() => setShowSearch(false)}
+                />
+              </div>
             )}
           </div>
         </main>
@@ -1981,6 +2941,27 @@ export function App() {
           </div>
         </div>
       )}
+
+      {/* 6. Shortcuts Cheatsheet Modal */}
+      <ShortcutsModal
+        visible={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
+        isMac={isMac}
+      />
+
+      {/* 7. Command Palette Modal */}
+      <CommandPalette
+        visible={showCommandPalette}
+        onClose={() => setShowCommandPalette(false)}
+        commands={paletteCommands}
+        isMac={isMac}
+      />
+
+      {/* 8. Action Feedback Toast */}
+      <ShortcutToast
+        message={shortcutToast}
+        onClose={() => setShortcutToast(null)}
+      />
     </div>
   );
 }
