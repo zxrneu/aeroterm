@@ -1,5 +1,9 @@
 # AeroTerm
 
+[![CI](https://github.com/zxrneu/aeroterm/actions/workflows/ci.yml/badge.svg)](https://github.com/zxrneu/aeroterm/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/zxrneu/aeroterm)
+
 > **轻灵如羽，快如疾风** —— 一个基于 Rust 构建的高性能、极客级、现代化跨平台终端与服务器管理工作站（告别 Electron 臃肿，带来极致流畅的极客体验）。
 
 ## 项目定位与核心优势
