@@ -40,6 +40,11 @@ async fn main() -> anyhow::Result<()> {
     // 3. Initialize Session Manager, Inventory & AI Copilot Client
     let session_mgr = SessionManager::new();
     let inventory_mgr = InventoryManager::new_default();
+    if let Ok(count) = inventory_mgr.import_ssh_config().await {
+        if count > 0 {
+            info!("Auto-discovered and imported {} hosts from ~/.ssh/config", count);
+        }
+    }
     let ai_config = AiClientConfig::default();
     let ai_client = Arc::new(TerminalAiClient::new(ai_config));
 

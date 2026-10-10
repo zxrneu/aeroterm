@@ -5,6 +5,7 @@ use terminal_core::{Result, TerminalError};
 
 pub struct PtySession {
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -42,8 +43,14 @@ impl PtySession {
             .spawn_command(cmd)
             .map_err(|e| TerminalError::Pty(format!("Failed to spawn child process: {}", e)))?;
 
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| TerminalError::Pty(format!("Failed to take PTY writer: {}", e)))?;
+
         Ok(Self {
             master: Arc::new(Mutex::new(pair.master)),
+            writer: Arc::new(Mutex::new(writer)),
             child,
         })
     }
@@ -69,16 +76,18 @@ impl PtySession {
 
     /// Write input bytes (e.g. keyboard keystrokes) to the PTY
     pub fn write_input(&self, data: &[u8]) -> Result<()> {
-        let master = self
-            .master
+        let mut writer = self
+            .writer
             .lock()
-            .map_err(|_| TerminalError::Pty("Master lock poisoned".to_string()))?;
+            .map_err(|_| TerminalError::Pty("Writer lock poisoned".to_string()))?;
 
-        master
-            .take_writer()
-            .map_err(|e| TerminalError::Pty(format!("Failed to get PTY writer: {}", e)))?
+        writer
             .write_all(data)
             .map_err(|e| TerminalError::Pty(format!("Write to PTY failed: {}", e)))?;
+
+        writer
+            .flush()
+            .map_err(|e| TerminalError::Pty(format!("Flush PTY failed: {}", e)))?;
 
         Ok(())
     }
@@ -139,5 +148,13 @@ mod tests {
             "PTY output should not be empty: {}",
             total_output
         );
+    }
+
+    #[test]
+    fn test_multiple_writes() {
+        let session = PtySession::spawn_default(24, 80).unwrap();
+        session.write_input(b"echo 1\n").unwrap();
+        let res = session.write_input(b"echo 2\n");
+        assert!(res.is_ok(), "Second write_input failed: {:?}", res);
     }
 }

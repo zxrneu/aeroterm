@@ -141,6 +141,96 @@ impl InventoryManager {
         Ok(removed)
     }
 
+    pub async fn import_ssh_config(&self) -> Result<usize> {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let ssh_config_path = PathBuf::from(home).join(".ssh/config");
+        if !ssh_config_path.exists() {
+            return Ok(0);
+        }
+
+        let content = fs::read_to_string(&ssh_config_path).map_err(|e| {
+            TerminalError::Config(format!("Failed to read ~/.ssh/config: {}", e))
+        })?;
+
+        let mut imported = 0;
+        let mut current_host = String::new();
+        let mut current_hostname = String::new();
+        let mut current_user = "root".to_string();
+        let mut current_port: u16 = 22;
+
+        let commit_entry = |host: &str, hostname: &str, user: &str, port: u16| -> Option<Connection> {
+            if host.is_empty() || host == "*" || host.contains('?') || host.contains('*') {
+                return None;
+            }
+            let target_host = if hostname.is_empty() { host } else { hostname };
+            let mut conn = Connection::new_ssh(
+                host.to_string(),
+                target_host.to_string(),
+                port,
+                user.to_string(),
+                AuthMethod::AskEveryTime,
+            );
+            conn.tags = vec!["SSH Config".to_string()];
+            Some(conn)
+        };
+
+        let mut new_conns = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+
+            let mut parts = trimmed.split_whitespace();
+            let key = parts.next().unwrap_or("").to_lowercase();
+            let value = parts.next().unwrap_or("");
+
+            match key.as_str() {
+                "host" => {
+                    if let Some(conn) = commit_entry(&current_host, &current_hostname, &current_user, current_port) {
+                        new_conns.push(conn);
+                    }
+                    current_host = value.to_string();
+                    current_hostname = String::new();
+                    current_user = "root".to_string();
+                    current_port = 22;
+                }
+                "hostname" => {
+                    current_hostname = value.to_string();
+                }
+                "user" => {
+                    current_user = value.to_string();
+                }
+                "port" => {
+                    if let Ok(p) = value.parse::<u16>() {
+                        current_port = p;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(conn) = commit_entry(&current_host, &current_hostname, &current_user, current_port) {
+            new_conns.push(conn);
+        }
+
+        let mut lock = self.connections.write().await;
+        for conn in new_conns {
+            if !lock.iter().any(|existing| existing.name == conn.name) {
+                lock.push(conn);
+                imported += 1;
+            }
+        }
+        drop(lock);
+
+        if imported > 0 {
+            self.persist().await?;
+            info!("Imported {} hosts from ~/.ssh/config", imported);
+        }
+        Ok(imported)
+    }
+
     async fn persist(&self) -> Result<()> {
         let lock = self.connections.read().await;
         let json = serde_json::to_string_pretty(&*lock)

@@ -155,6 +155,10 @@ pub fn create_gateway_router(state: AppState) -> Router {
             "/api/connections",
             get(list_connections).post(save_connection),
         )
+        .route(
+            "/api/connections/import-ssh-config",
+            post(import_ssh_config_handler),
+        )
         .route("/api/connections/{id}", delete(delete_connection))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/local", post(create_local_session))
@@ -167,6 +171,8 @@ pub fn create_gateway_router(state: AppState) -> Router {
         .route("/api/sftp/list", get(sftp_list))
         .route("/api/sftp/read", get(sftp_read))
         .route("/api/sftp/write", post(sftp_write))
+        .route("/api/sftp/delete", post(sftp_delete))
+        .route("/api/sftp/mkdir", post(sftp_mkdir))
         .route("/ws/terminal/{id}", get(ws_terminal_handler))
         .layer(cors)
         .with_state(state);
@@ -391,6 +397,15 @@ async fn delete_connection(State(state): State<AppState>, Path(id): Path<Uuid>) 
     }
 }
 
+async fn import_ssh_config_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    match state.inventory_mgr.import_ssh_config().await {
+        Ok(count) => Ok(Json(serde_json::json!({ "imported_count": count }))),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
 async fn connect_session(
     State(state): State<AppState>,
     Json(payload): Json<ConnectSessionReq>,
@@ -426,7 +441,15 @@ async fn connect_session(
             let session_name = format!("{} ({}:{})", conn.name, conn.host, conn.port);
             let session = state
                 .session_mgr
-                .create_local_session(Some(session_name), rows, cols)
+                .create_ssh_session(
+                    conn.id.to_string(),
+                    session_name,
+                    conn.host,
+                    conn.port,
+                    conn.username,
+                    rows,
+                    cols,
+                )
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             Ok(Json(SessionSummary {
@@ -476,6 +499,47 @@ async fn sftp_write(
     }
 }
 
+#[derive(Deserialize)]
+pub struct SftpDeleteReq {
+    pub path: String,
+}
+
+#[derive(Deserialize)]
+pub struct SftpMkdirReq {
+    pub path: String,
+}
+
+async fn sftp_delete(
+    Json(payload): Json<SftpDeleteReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = std::path::Path::new(&payload.path);
+    let res = if path.is_dir() {
+        tokio::fs::remove_dir_all(path).await
+    } else {
+        tokio::fs::remove_file(path).await
+    };
+    match res {
+        Ok(_) => Ok(Json(serde_json::json!({ "success": true, "path": payload.path }))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to delete: {}", e),
+        )),
+    }
+}
+
+async fn sftp_mkdir(
+    Json(payload): Json<SftpMkdirReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = std::path::Path::new(&payload.path);
+    match tokio::fs::create_dir_all(path).await {
+        Ok(_) => Ok(Json(serde_json::json!({ "success": true, "path": payload.path }))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to create dir: {}", e),
+        )),
+    }
+}
+
 async fn ws_terminal_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -484,20 +548,68 @@ async fn ws_terminal_handler(
     let session = match state.session_mgr.get_session(&id).await {
         Some(s) => s,
         None => {
-            // Auto-create local session if not exists
-            match state
-                .session_mgr
-                .create_local_session(Some("Local Session".to_string()), 24, 80)
-                .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to spawn terminal: {}", e),
-                    )
-                        .into_response();
+            // Check if id corresponds to a saved connection
+            let mut matched_conn = None;
+            if let Ok(uuid) = Uuid::parse_str(&id) {
+                matched_conn = state.inventory_mgr.get(uuid).await;
+            }
+            if matched_conn.is_none() {
+                for c in state.inventory_mgr.list().await {
+                    if c.name == id {
+                        matched_conn = Some(c);
+                        break;
+                    }
                 }
+            }
+
+            match matched_conn {
+                Some(conn) => match conn.protocol {
+                    Protocol::Ssh => {
+                        let session_name = format!("{} ({}:{})", conn.name, conn.host, conn.port);
+                        match state
+                            .session_mgr
+                            .create_ssh_session(
+                                id.clone(),
+                                session_name,
+                                conn.host,
+                                conn.port,
+                                conn.username,
+                                24,
+                                80,
+                            )
+                            .await
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("Failed to spawn SSH session: {}", e),
+                                )
+                                    .into_response();
+                            }
+                        }
+                    }
+                    _ => match state.session_mgr.get_or_create_session(&id, None, 24, 80).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Failed to spawn terminal: {}", e),
+                            )
+                                .into_response();
+                        }
+                    },
+                },
+                None => match state.session_mgr.get_or_create_session(&id, None, 24, 80).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to spawn terminal: {}", e),
+                        )
+                            .into_response();
+                    }
+                },
             }
         }
     };
@@ -517,6 +629,12 @@ async fn handle_terminal_socket(
         "WebSocket terminal client connected for session {}",
         session.id
     );
+
+    // Replay initial/recent output history so the screen is never blank on connect or tab-switch
+    let history = session.get_history();
+    if !history.is_empty() {
+        let _ = ws_sender.send(Message::Binary(history.into())).await;
+    }
 
     // Pump session output -> WebSocket
     let session_out_task = tokio::spawn(async move {

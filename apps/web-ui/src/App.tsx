@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -8,6 +8,7 @@ import {
   Check,
   Code,
   FileText,
+  FolderPlus,
   FolderTree,
   Network,
   Play,
@@ -20,6 +21,7 @@ import {
   Shield,
   SplitSquareVertical,
   Terminal as TerminalIcon,
+  Trash2,
   UploadCloud,
   Video,
   X,
@@ -37,6 +39,15 @@ interface SavedConnection {
   note?: string;
 }
 
+interface TabItem {
+  id: string;
+  name: string;
+  type: 'local' | 'ssh';
+  host?: string;
+  port?: number;
+  user?: string;
+}
+
 interface EditingFile {
   path: string;
   name: string;
@@ -44,24 +55,62 @@ interface EditingFile {
   saving: boolean;
 }
 
-export function App() {
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const xtermInstance = useRef<Terminal | null>(null);
+interface TunnelItem {
+  id: string;
+  name: string;
+  tunnelType: 'local' | 'socks5';
+  localPort: number;
+  remoteHost?: string;
+  remotePort?: number;
+  running: boolean;
+}
 
+const QUICK_COMMANDS = [
+  { label: '进程监控', cmd: 'top -l 1 | head -n 20' },
+  { label: '端口监听', cmd: 'lsof -iTCP -sTCP:LISTEN -n -P' },
+  { label: '磁盘空间', cmd: 'df -h' },
+  { label: '网络状态', cmd: 'netstat -nr | head -n 15' },
+  { label: 'Git 状态', cmd: 'git status' },
+  { label: '清空屏幕', cmd: 'clear' },
+];
+
+export function App() {
   const isDev = window.location.port === '5173';
   const apiBase = isDev ? 'http://127.0.0.1:12335' : window.location.origin;
   const wsBase = isDev
     ? 'ws://127.0.0.1:12335'
     : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
 
-  const [activeTab, setActiveTab] = useState<string>('local');
+  // Tabs Management
+  const [tabs, setTabs] = useState<TabItem[]>([
+    { id: 'local-1', name: 'Local (zsh)', type: 'local' },
+  ]);
+  const [activeTabId, setActiveTabId] = useState<string>('local-1');
+  const [showAddTabMenu, setShowAddTabMenu] = useState(false);
+
+  // Split Screen
+  const [isSplitScreen, setIsSplitScreen] = useState(false);
+  const [splitTabId] = useState<string>('local-split');
+
+  // Terminals Refs & Instances
+  const mainTermRef = useRef<HTMLDivElement>(null);
+  const splitTermRef = useRef<HTMLDivElement>(null);
+  const mainXterm = useRef<Terminal | null>(null);
+  const splitXterm = useRef<Terminal | null>(null);
+  const mainFitAddon = useRef<FitAddon | null>(null);
+  const splitFitAddon = useRef<FitAddon | null>(null);
+
+  // WebSockets
+  const mainWsRef = useRef<WebSocket | null>(null);
+  const splitWsRef = useRef<WebSocket | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  // Drawers & Controls
   const [activeDrawer, setActiveDrawer] = useState<'monitor' | 'sftp' | 'tunnels' | 'ai' | null>('monitor');
   const [broadcastEnabled, setBroadcastEnabled] = useState(false);
   const [vaultUnlocked] = useState(true);
-  const [wsConnected, setWsConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
 
-  // Connection Inventory state
+  // Connections Inventory
   const [connections, setConnections] = useState<SavedConnection[]>([]);
   const [showConnModal, setShowConnModal] = useState(false);
   const [newConnName, setNewConnName] = useState('');
@@ -69,38 +118,50 @@ export function App() {
   const [newConnPort, setNewConnPort] = useState(22);
   const [newConnUser, setNewConnUser] = useState('root');
   const [newConnTag, setNewConnTag] = useState('Production');
+  const [connToast, setConnToast] = useState<string | null>(null);
 
-  // Remote File Editor state
+  // SFTP & Remote File Editor
+  const [sftpPath, setSftpPath] = useState('.');
+  const [sftpEntries, setSftpEntries] = useState<Array<{ name: string; path?: string; is_dir: boolean; size_bytes: number }>>([]);
   const [editingFile, setEditingFile] = useState<EditingFile | null>(null);
   const [editorToast, setEditorToast] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Session Recording state (Asciinema .cast v2)
+  // Network Tunnels
+  const [tunnels, setTunnels] = useState<TunnelItem[]>([
+    { id: 'tun-1', name: 'MySQL 本地映射', tunnelType: 'local', localPort: 3307, remoteHost: '10.240.1.5', remotePort: 3306, running: true },
+    { id: 'tun-2', name: '内网 SOCKS5 代理', tunnelType: 'socks5', localPort: 1080, running: false },
+  ]);
+  const [newTunnelName, setNewTunnelName] = useState('');
+  const [newTunnelType, setNewTunnelType] = useState<'local' | 'socks5'>('local');
+  const [newTunnelLocalPort, setNewTunnelLocalPort] = useState(8080);
+  const [newTunnelRemoteHost, setNewTunnelRemoteHost] = useState('127.0.0.1');
+  const [newTunnelRemotePort, setNewTunnelRemotePort] = useState(80);
+
+  // Session Recording (Asciinema .cast v2)
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const recordingEventsRef = useRef<Array<[number, string, string]>>([]);
   const recordingStartRef = useRef<number>(0);
 
-  // Monitor live metrics state
-  const [cpuUsage, setCpuUsage] = useState(24.5);
-  const [memUsage, setMemUsage] = useState(58.2);
-  const [netRx, setNetRx] = useState(14.8);
-  const [netTx, setNetTx] = useState(4.2);
+  // Live Metrics
+  const [cpuUsage, setCpuUsage] = useState(18.5);
+  const [memUsage, setMemUsage] = useState(42.3);
+  const [netRx, setNetRx] = useState(12.4);
+  const [netTx, setNetTx] = useState(3.8);
 
-  // SFTP state
-  const [sftpPath, setSftpPath] = useState('.');
-  const [sftpEntries, setSftpEntries] = useState<Array<{ name: string; path?: string; is_dir: boolean; size_bytes: number }>>([]);
-
-  // AI chat state
+  // AI Chat
   const [aiInput, setAiInput] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
   const [aiMessages, setAiMessages] = useState<Array<{ sender: 'user' | 'assistant'; text: string; code?: string }>>([
     {
       sender: 'assistant',
-      text: '你好！我是 TerminalPro 终端智能助手“小易”。我可以直接解释命令、分析报错、或者根据你的自然语言需求生成高可用运维脚本。',
+      text: '你好！我是 TerminalPro 终端智能助手“小易”。我可以直接解释命令、分析报错、或者为你自动生成运维管理脚本。',
     },
   ]);
 
-  // Load saved connection profiles
-  const loadConnections = async () => {
+  // Load Saved Connections
+  const loadConnections = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/connections`);
       if (res.ok) {
@@ -108,19 +169,31 @@ export function App() {
         setConnections(data);
       }
     } catch {
-      // fallback sample
-      setConnections([
-        { id: '1', name: 'prod-k8s-node-01', protocol: 'ssh', host: '10.244.0.15', port: 22, username: 'root', tags: ['Kubernetes', 'Prod'] },
-        { id: '2', name: 'db-postgres-master', protocol: 'ssh', host: '192.168.1.120', port: 5432, username: 'postgres', tags: ['Database'] },
-      ]);
+      // fallback
     }
-  };
+  }, [apiBase]);
 
   useEffect(() => {
     loadConnections();
-  }, [apiBase]);
+  }, [loadConnections]);
 
-  // Handle saving new connection
+  // Import ~/.ssh/config
+  const handleImportSshConfig = async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/connections/import-ssh-config`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        await loadConnections();
+        setConnToast(`成功从 ~/.ssh/config 导入并同步了 ${data.imported_count || 0} 台主机配置`);
+        setTimeout(() => setConnToast(null), 3000);
+      }
+    } catch {
+      setConnToast('导入失败，请检查 ~/.ssh/config 权限');
+      setTimeout(() => setConnToast(null), 3000);
+    }
+  };
+
+  // Create Connection
   const handleCreateConnection = async () => {
     if (!newConnName.trim() || !newConnHost.trim()) return;
     const payload = {
@@ -154,13 +227,68 @@ export function App() {
     }
   };
 
-  // Recording timer
+  // Delete Connection
+  const handleDeleteConnection = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch(`${apiBase}/api/connections/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setConnections((prev) => prev.filter((c) => c.id !== id));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  // Add / Close Tabs
+  const handleAddLocalTab = () => {
+    const nextIdx = tabs.length + 1;
+    const newTab: TabItem = {
+      id: `local-${Date.now()}`,
+      name: `Local (${nextIdx})`,
+      type: 'local',
+    };
+    setTabs((prev) => [...prev, newTab]);
+    setActiveTabId(newTab.id);
+    setShowAddTabMenu(false);
+  };
+
+  const handleConnectHost = (c: SavedConnection) => {
+    const existing = tabs.find((t) => t.id === c.id || t.name === c.name);
+    if (existing) {
+      setActiveTabId(existing.id);
+    } else {
+      const newTab: TabItem = {
+        id: c.id,
+        name: c.name,
+        type: 'ssh',
+        host: c.host,
+        port: c.port,
+        user: c.username,
+      };
+      setTabs((prev) => [...prev, newTab]);
+      setActiveTabId(newTab.id);
+    }
+    setShowConnModal(false);
+    setShowAddTabMenu(false);
+  };
+
+  const handleCloseTab = (tabId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (tabs.length <= 1) return; // Keep at least one tab
+    const nextTabs = tabs.filter((t) => t.id !== tabId);
+    setTabs(nextTabs);
+    if (activeTabId === tabId) {
+      setActiveTabId(nextTabs[nextTabs.length - 1].id);
+    }
+    fetch(`${apiBase}/api/sessions/${tabId}`, { method: 'DELETE' }).catch(() => {});
+  };
+
+  // Recording Timer
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
     if (isRecording) {
-      timer = setInterval(() => {
-        setRecordingSeconds((prev) => prev + 1);
-      }, 1000);
+      timer = setInterval(() => setRecordingSeconds((prev) => prev + 1), 1000);
     } else {
       setRecordingSeconds(0);
     }
@@ -175,16 +303,15 @@ export function App() {
       recordingStartRef.current = Date.now();
       setIsRecording(true);
     } else {
-      // Export Asciinema v2 .cast file
       setIsRecording(false);
-      const cols = xtermInstance.current?.cols || 80;
-      const rows = xtermInstance.current?.rows || 24;
+      const cols = mainXterm.current?.cols || 80;
+      const rows = mainXterm.current?.rows || 24;
       const header = {
         version: 2,
         width: cols,
         height: rows,
         timestamp: Math.floor(recordingStartRef.current / 1000),
-        title: `TerminalPro Session (${activeTab})`,
+        title: `TerminalPro Session (${activeTabId})`,
       };
       const lines = [JSON.stringify(header)];
       for (const ev of recordingEventsRef.current) {
@@ -194,13 +321,62 @@ export function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `terminalpro_${activeTab}_${Date.now()}.cast`;
+      a.download = `terminalpro_${activeTabId}_${Date.now()}.cast`;
       a.click();
       URL.revokeObjectURL(url);
     }
   };
 
-  // Open file for in-app code editor
+  // Metrics Polling
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/metrics`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.cpu_usage_percent !== undefined) setCpuUsage(data.cpu_usage_percent);
+          if (data.memory?.used_percent !== undefined) setMemUsage(data.memory.used_percent);
+          if (data.network?.rx_bytes_sec) setNetRx(data.network.rx_bytes_sec / 1024 / 1024);
+          if (data.network?.tx_bytes_sec) setNetTx(data.network.tx_bytes_sec / 1024 / 1024);
+          return;
+        }
+      } catch {
+        // simulation
+      }
+      setCpuUsage((prev) => Math.max(10, Math.min(95, prev + (Math.random() * 6 - 3))));
+      setMemUsage((prev) => Math.max(20, Math.min(90, prev + (Math.random() * 2 - 1))));
+      setNetRx((prev) => Math.max(1, Math.min(80, prev + (Math.random() * 4 - 2))));
+      setNetTx((prev) => Math.max(0.5, Math.min(30, prev + (Math.random() * 2 - 1))));
+    };
+
+    const timer = setInterval(fetchMetrics, 2000);
+    fetchMetrics();
+    return () => clearInterval(timer);
+  }, [apiBase]);
+
+  // SFTP Operations
+  const loadSftpList = useCallback(
+    async (path: string) => {
+      try {
+        const res = await fetch(`${apiBase}/api/sftp/list?path=${encodeURIComponent(path)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setSftpEntries(data);
+          setSftpPath(path);
+        }
+      } catch {
+        // ignore
+      }
+    },
+    [apiBase]
+  );
+
+  useEffect(() => {
+    if (activeDrawer === 'sftp') {
+      loadSftpList(sftpPath);
+    }
+  }, [activeDrawer, sftpPath, loadSftpList]);
+
   const handleOpenFile = async (file: { name: string; path?: string }) => {
     const filePath = file.path || (sftpPath === '.' ? file.name : `${sftpPath}/${file.name}`);
     try {
@@ -221,7 +397,7 @@ export function App() {
     setEditingFile({
       path: filePath,
       name: file.name,
-      content: `# TerminalPro Remote File: ${file.name}\n# Path: ${filePath}\n\nserver {\n    listen 80;\n    server_name production.internal;\n    location /api {\n        proxy_pass http://127.0.0.1:12335;\n    }\n}\n`,
+      content: `# TerminalPro Remote File: ${file.name}\n# Path: ${filePath}\n\n# Loaded content...`,
       saving: false,
     });
   };
@@ -240,63 +416,96 @@ export function App() {
         setTimeout(() => setEditorToast(null), 3000);
       }
     } catch {
-      setEditorToast('已保存 (本地离线态)');
+      setEditorToast('保存失败，请检查写入权限');
       setTimeout(() => setEditorToast(null), 3000);
     } finally {
       setEditingFile((prev) => (prev ? { ...prev, saving: false } : null));
     }
   };
 
-  // Periodic metric updates from backend probe
-  useEffect(() => {
-    const fetchMetrics = async () => {
-      try {
-        const res = await fetch(`${apiBase}/api/metrics`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.cpu_usage_percent !== undefined) setCpuUsage(data.cpu_usage_percent);
-          if (data.memory?.used_percent !== undefined) setMemUsage(data.memory.used_percent);
-          if (data.network?.rx_bytes_sec) setNetRx(data.network.rx_bytes_sec / 1024 / 1024);
-          if (data.network?.tx_bytes_sec) setNetTx(data.network.tx_bytes_sec / 1024 / 1024);
-          return;
-        }
-      } catch {
-        // Fallback simulation
-      }
-      setCpuUsage((prev) => Math.max(10, Math.min(95, prev + (Math.random() * 8 - 4))));
-      setMemUsage((prev) => Math.max(20, Math.min(90, prev + (Math.random() * 2 - 1))));
-      setNetRx((prev) => Math.max(1, Math.min(80, prev + (Math.random() * 4 - 2))));
-      setNetTx((prev) => Math.max(0.5, Math.min(30, prev + (Math.random() * 2 - 1))));
-    };
-
-    const timer = setInterval(fetchMetrics, 2000);
-    fetchMetrics();
-    return () => clearInterval(timer);
-  }, [apiBase]);
-
-  // Load SFTP directory entries
-  const loadSftpList = async (path: string) => {
+  const handleDeleteFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`确定删除 ${filePath} 吗？`)) return;
     try {
-      const res = await fetch(`${apiBase}/api/sftp/list?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`${apiBase}/api/sftp/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filePath }),
+      });
       if (res.ok) {
-        const data = await res.json();
-        setSftpEntries(data);
-        setSftpPath(path);
+        loadSftpList(sftpPath);
       }
     } catch {
-      // fallback
+      // ignore
     }
   };
 
-  useEffect(() => {
-    if (activeDrawer === 'sftp') {
-      loadSftpList(sftpPath);
+  const handleCreateFolder = async () => {
+    const name = prompt('请输入新目录名称:');
+    if (!name) return;
+    const target = sftpPath === '.' ? name : `${sftpPath}/${name}`;
+    try {
+      const res = await fetch(`${apiBase}/api/sftp/mkdir`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: target }),
+      });
+      if (res.ok) {
+        loadSftpList(sftpPath);
+      }
+    } catch {
+      // ignore
     }
-  }, [activeDrawer, sftpPath, apiBase]);
+  };
 
-  // Initialize xterm.js & WebSocket bridge
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const content = reader.result as string;
+      const targetPath = sftpPath === '.' ? file.name : `${sftpPath}/${file.name}`;
+      try {
+        await fetch(`${apiBase}/api/sftp/write`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: targetPath, content }),
+        });
+        loadSftpList(sftpPath);
+      } catch {
+        // ignore
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  // Tunnel Actions
+  const handleToggleTunnel = (id: string) => {
+    setTunnels((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, running: !t.running } : t))
+    );
+  };
+
+  const handleAddTunnel = () => {
+    if (!newTunnelName.trim()) return;
+    const item: TunnelItem = {
+      id: `tun-${Date.now()}`,
+      name: newTunnelName.trim(),
+      tunnelType: newTunnelType,
+      localPort: Number(newTunnelLocalPort) || 8080,
+      remoteHost: newTunnelRemoteHost.trim() || '127.0.0.1',
+      remotePort: Number(newTunnelRemotePort) || 80,
+      running: true,
+    };
+    setTunnels((prev) => [...prev, item]);
+    setNewTunnelName('');
+  };
+
+  // Main Terminal WebSocket Connection
   useEffect(() => {
-    if (!terminalRef.current) return;
+    if (!mainTermRef.current) return;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -316,14 +525,6 @@ export function App() {
         magenta: '#a855f7',
         cyan: '#38bdf8',
         white: '#f8fafc',
-        brightBlack: '#475569',
-        brightRed: '#fb7185',
-        brightGreen: '#34d399',
-        brightYellow: '#fbbf24',
-        brightBlue: '#60a5fa',
-        brightMagenta: '#c084fc',
-        brightCyan: '#7dd3fc',
-        brightWhite: '#ffffff',
       },
       allowTransparency: true,
       convertEol: true,
@@ -331,197 +532,210 @@ export function App() {
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-
-    term.open(terminalRef.current);
-
+    term.open(mainTermRef.current);
     try {
-      const webglAddon = new WebglAddon();
-      term.loadAddon(webglAddon);
+      term.loadAddon(new WebglAddon());
     } catch {
-      // fallback to canvas/DOM if WebGL not supported in current environment
+      // fallback
     }
-
     fitAddon.fit();
-    xtermInstance.current = term;
+    mainXterm.current = term;
+    mainFitAddon.current = fitAddon;
 
-    // Welcome banner
-    term.writeln('\x1b[1;36m======================================================================\x1b[0m');
-    term.writeln('\x1b[1;34m  TerminalPro v0.1.0\x1b[0m \x1b[38;5;244m- Next-Gen Terminal Workstation (Rust Core)\x1b[0m');
-    term.writeln('\x1b[38;5;244m  Zero-Knowledge Vault: \x1b[32mActive (AES-256-GCM)\x1b[0m | MCP Service: \x1b[32mhttp://127.0.0.1:12335\x1b[0m');
-    term.writeln('\x1b[1;36m======================================================================\x1b[0m');
-
-    // Connect WebSocket to real backend PTY/SSH session
+    // Connect WebSocket
     let socket: WebSocket | null = null;
     try {
-      socket = new WebSocket(`${wsBase}/ws/terminal/${activeTab}`);
+      socket = new WebSocket(`${wsBase}/ws/terminal/${activeTabId}`);
       socket.binaryType = 'arraybuffer';
-      wsRef.current = socket;
+      mainWsRef.current = socket;
 
       socket.onopen = () => {
         setWsConnected(true);
-        term.writeln('\x1b[32m[✓] Live PTY Bridge Connected (ws://127.0.0.1:12335)\x1b[0m\r\n');
         socket?.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       };
 
-      socket.onclose = () => {
-        setWsConnected(false);
-      };
+      socket.onclose = () => setWsConnected(false);
+      socket.onerror = () => setWsConnected(false);
 
-      socket.onerror = () => {
-        setWsConnected(false);
-      };
-
-      socket.onmessage = async (event) => {
-        let textChunk = '';
+      socket.onmessage = (event) => {
+        let chunk = '';
         if (event.data instanceof ArrayBuffer) {
           const u8 = new Uint8Array(event.data);
-          textChunk = new TextDecoder().decode(u8);
+          chunk = new TextDecoder().decode(u8);
           term.write(u8);
         } else if (typeof event.data === 'string') {
-          textChunk = event.data;
+          chunk = event.data;
           term.write(event.data);
         }
-        if (recordingStartRef.current > 0 && textChunk) {
+        if (recordingStartRef.current > 0 && chunk) {
           const elapsed = (Date.now() - recordingStartRef.current) / 1000;
-          recordingEventsRef.current.push([elapsed, 'o', textChunk]);
+          recordingEventsRef.current.push([elapsed, 'o', chunk]);
         }
       };
     } catch {
       setWsConnected(false);
     }
 
-    let currentLine = '';
     term.onData((data) => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      if (mainWsRef.current && mainWsRef.current.readyState === WebSocket.OPEN) {
         if (broadcastEnabled) {
-          wsRef.current.send(JSON.stringify({ type: 'broadcast', data }));
+          mainWsRef.current.send(JSON.stringify({ type: 'broadcast', data }));
         } else {
-          wsRef.current.send(JSON.stringify({ type: 'input', data }));
-        }
-      } else {
-        // Fallback local echo
-        if (data === '\r') {
-          term.writeln('');
-          handleCommand(currentLine.trim(), term);
-          currentLine = '';
-          term.write('\x1b[32m➜\x1b[0m \x1b[36m~/coding/terminal_pro\x1b[0m \x1b[33m(main)\x1b[0m $ ');
-        } else if (data === '\u007F') {
-          if (currentLine.length > 0) {
-            currentLine = currentLine.slice(0, -1);
-            term.write('\b \b');
-          }
-        } else {
-          currentLine += data;
-          term.write(data);
+          mainWsRef.current.send(JSON.stringify({ type: 'input', data }));
         }
       }
     });
 
     const handleResize = () => {
       fitAddon.fit();
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      if (mainWsRef.current && mainWsRef.current.readyState === WebSocket.OPEN) {
+        mainWsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
       }
     };
     window.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('resize', handleResize);
-      if (socket) {
-        socket.close();
-      }
+      if (socket) socket.close();
       term.dispose();
     };
-  }, [activeTab, broadcastEnabled, wsBase]);
+  }, [activeTabId, broadcastEnabled, wsBase]);
 
-  const handleCommand = (cmd: string, term: Terminal) => {
-    if (!cmd) return;
-    if (cmd === 'clear') {
-      term.clear();
-    } else if (cmd === 'uname -a') {
-      term.writeln('Darwin zxr-MacBook-Pro.local 24.6.0 Darwin Kernel Version 24.6.0 arm64');
-    } else if (cmd === 'help') {
-      term.writeln('Available demo commands: help, uname -a, status, monitor, sftp, clear');
-    } else if (cmd === 'status') {
-      term.writeln('\x1b[32m[✓] Backend Core:\x1b[0m Rust 2024 (Tokio Async, Russh 0.64)');
-      term.writeln('\x1b[32m[✓] Vault:\x1b[0m Argon2id KDF + AES-256-GCM AEAD (Unlocked)');
-      term.writeln('\x1b[32m[✓] MCP Server:\x1b[0m http://127.0.0.1:12335 (4 Tools Active)');
-      term.writeln('\x1b[32m[✓] PTY:\x1b[0m Portable-PTY POSIX OpenPTY');
-    } else {
-      term.writeln(`zsh: command executed: ${cmd}`);
+  // Split-Screen Terminal Initialization
+  useEffect(() => {
+    if (!isSplitScreen || !splitTermRef.current) return;
+
+    const term = new Terminal({
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      fontSize: 14,
+      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+      theme: {
+        background: '#0a0d14',
+        foreground: '#e2e8f0',
+        cursor: '#10b981',
+      },
+      convertEol: true,
+    });
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(splitTermRef.current);
+    fitAddon.fit();
+    splitXterm.current = term;
+    splitFitAddon.current = fitAddon;
+
+    let socket: WebSocket | null = null;
+    try {
+      socket = new WebSocket(`${wsBase}/ws/terminal/${splitTabId}`);
+      socket.binaryType = 'arraybuffer';
+      splitWsRef.current = socket;
+
+      socket.onopen = () => {
+        socket?.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      };
+
+      socket.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          term.write(new Uint8Array(event.data));
+        } else if (typeof event.data === 'string') {
+          term.write(event.data);
+        }
+      };
+    } catch {
+      // ignore
+    }
+
+    term.onData((data) => {
+      if (splitWsRef.current && splitWsRef.current.readyState === WebSocket.OPEN) {
+        splitWsRef.current.send(JSON.stringify({ type: 'input', data }));
+      }
+    });
+
+    const handleResize = () => fitAddon.fit();
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (socket) socket.close();
+      term.dispose();
+    };
+  }, [isSplitScreen, splitTabId, wsBase]);
+
+  // Execute Quick Command
+  const runQuickCommand = (cmd: string) => {
+    if (mainWsRef.current && mainWsRef.current.readyState === WebSocket.OPEN) {
+      mainWsRef.current.send(JSON.stringify({ type: 'input', data: `${cmd}\n` }));
     }
   };
 
+  // AI Assistant Actions
   const handleSendAi = async () => {
     if (!aiInput.trim()) return;
     const prompt = aiInput.trim();
     setAiMessages((prev) => [...prev, { sender: 'user', text: prompt }]);
     setAiInput('');
+    setAiLoading(true);
 
     try {
       const res = await fetch(`${apiBase}/api/ai/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, os_type: 'macOS', current_cwd: '~/coding/terminal_pro' }),
+        body: JSON.stringify({ prompt, os_type: 'macOS', current_cwd: sftpPath }),
       });
       if (res.ok) {
         const data = await res.json();
         const codeMatch = data.response?.match(/```(?:bash|sh)?\n([\s\S]*?)```/);
         const code = codeMatch ? codeMatch[1].trim() : undefined;
-        setAiMessages((prev) => [
-          ...prev,
-          {
-            sender: 'assistant',
-            text: data.response,
-            code,
-          },
-        ]);
+        setAiMessages((prev) => [...prev, { sender: 'assistant', text: data.response, code }]);
+        setAiLoading(false);
         return;
       }
     } catch {
-      // ignore
+      // fallback
     }
 
-    // Fallback simulation
     setTimeout(() => {
-      if (prompt.includes('端口') || prompt.includes('占用')) {
-        setAiMessages((prev) => [
-          ...prev,
-          {
-            sender: 'assistant',
-            text: '在 Linux 上排查特定端口占用的推荐命令如下，已为你生成参数：',
-            code: 'sudo lsof -i :8080 -P -n | grep LISTEN',
-          },
-        ]);
-      } else if (prompt.includes('查找') || prompt.includes('大文件')) {
-        setAiMessages((prev) => [
-          ...prev,
-          {
-            sender: 'assistant',
-            text: '查找系统根目录下大于 500MB 的文件并按大小降序输出：',
-            code: 'find / -type f -size +500M -exec du -h {} + 2>/dev/null | sort -rh | head -n 15',
-          },
-        ]);
-      } else {
-        setAiMessages((prev) => [
-          ...prev,
-          {
-            sender: 'assistant',
-            text: `针对你的需求：“${prompt}”，可以使用以下 Shell 命令执行并自动检查返回状态：`,
-            code: `curl -fsSL https://api.service.internal/health && echo "Health check OK"`,
-          },
-        ]);
-      }
+      setAiMessages((prev) => [
+        ...prev,
+        {
+          sender: 'assistant',
+          text: `针对：“${prompt}”，推荐执行以下命令：`,
+          code: `ps aux | grep node`,
+        },
+      ]);
+      setAiLoading(false);
     }, 400);
   };
 
-  const injectCodeToTerminal = (code: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'input', data: `${code}\n` }));
-    } else if (xtermInstance.current) {
-      xtermInstance.current.writeln(code);
-      xtermInstance.current.writeln(`[Executing: ${code}]`);
-      xtermInstance.current.write('\x1b[32m➜\x1b[0m \x1b[36m~/coding/terminal_pro\x1b[0m \x1b[33m(main)\x1b[0m $ ');
+  const handleDiagnoseError = async () => {
+    setAiLoading(true);
+    setActiveDrawer('ai');
+    try {
+      const res = await fetch(`${apiBase}/api/ai/diagnose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          command: 'docker-compose up',
+          error_output: 'bind: address already in use: 0.0.0.0:80',
+          exit_code: 1,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAiMessages((prev) => [
+          ...prev,
+          {
+            sender: 'assistant',
+            text: data.analysis,
+            code: 'sudo lsof -i :80 -P -n | grep LISTEN',
+          },
+        ]);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -540,7 +754,7 @@ export function App() {
           zIndex: 20,
         }}
       >
-        {/* Brand & Tabs */}
+        {/* Brand & Dynamic Tabs */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflowX: 'auto', flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginRight: '16px' }}>
             <div
@@ -563,72 +777,181 @@ export function App() {
             </span>
           </div>
 
-          {/* Connection Tabs */}
-          <div style={{ display: 'flex', gap: '4px' }}>
-            <button
-              onClick={() => setActiveTab('local')}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '6px 14px',
-                borderRadius: '6px',
-                fontSize: '13px',
-                fontWeight: 500,
-                background: activeTab === 'local' ? '#171d2d' : 'transparent',
-                color: activeTab === 'local' ? '#38bdf8' : '#94a3b8',
-                border: activeTab === 'local' ? '1px solid #1e2638' : '1px solid transparent',
-              }}
-            >
-              <TerminalIcon size={13} />
-              Local (zsh)
-            </button>
-            {connections
-              .filter((c) => c.protocol !== 'localpty')
-              .map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => setActiveTab(c.name)}
+          {/* Tab List */}
+          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+            {tabs.map((tab) => (
+              <div
+                key={tab.id}
+                onClick={() => setActiveTabId(tab.id)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '5px 12px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  background: activeTabId === tab.id ? '#171d2d' : 'transparent',
+                  color: activeTabId === tab.id ? '#38bdf8' : '#94a3b8',
+                  border: activeTabId === tab.id ? '1px solid #1e2638' : '1px solid transparent',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                }}
+              >
+                {tab.type === 'local' ? <TerminalIcon size={13} /> : <Server size={13} />}
+                <span>{tab.name}</span>
+                {tabs.length > 1 && (
+                  <button
+                    onClick={(e) => handleCloseTab(tab.id, e)}
+                    style={{
+                      padding: '2px',
+                      borderRadius: '4px',
+                      color: '#64748b',
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}
+                    title="关闭标签页"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            ))}
+
+            {/* Add Tab Dropdown */}
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => setShowAddTabMenu(!showAddTabMenu)}
+                style={{
+                  padding: '6px 8px',
+                  borderRadius: '6px',
+                  color: '#94a3b8',
+                  display: 'flex',
+                  alignItems: 'center',
+                  background: showAddTabMenu ? '#1e2638' : 'transparent',
+                }}
+                title="新建终端 / 连接主机"
+              >
+                <Plus size={15} />
+              </button>
+
+              {showAddTabMenu && (
+                <div
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 14px',
-                    borderRadius: '6px',
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    background: activeTab === c.name ? '#171d2d' : 'transparent',
-                    color: activeTab === c.name ? '#38bdf8' : '#94a3b8',
-                    border: activeTab === c.name ? '1px solid #1e2638' : '1px solid transparent',
+                    position: 'absolute',
+                    top: '32px',
+                    left: 0,
+                    width: '220px',
+                    background: '#131929',
+                    border: '1px solid #1e2638',
+                    borderRadius: '8px',
+                    boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
+                    padding: '6px',
+                    zIndex: 30,
                   }}
                 >
-                  <Server size={13} />
-                  {c.name}
-                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
-                </button>
-              ))}
-            <button
-              onClick={() => setShowConnModal(true)}
-              style={{
-                padding: '6px 10px',
-                borderRadius: '6px',
-                color: '#64748b',
-                display: 'flex',
-                alignItems: 'center',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-              }}
-              title="新建/管理资产连接"
-            >
-              <Plus size={15} />
-            </button>
+                  <button
+                    onClick={handleAddLocalTab}
+                    style={{
+                      width: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '8px 10px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      color: '#e2e8f0',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <TerminalIcon size={14} color="#10b981" />
+                    <span>新建系统终端 (zsh)</span>
+                  </button>
+
+                  <div style={{ height: '1px', background: '#1e2638', margin: '4px 0' }} />
+
+                  <div style={{ fontSize: '11px', color: '#64748b', padding: '4px 10px' }}>快速连接主机:</div>
+                  <div style={{ maxHeight: '180px', overflowY: 'auto' }}>
+                    {connections
+                      .filter((c) => c.protocol !== 'localpty')
+                      .slice(0, 6)
+                      .map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => handleConnectHost(c)}
+                          style={{
+                            width: '100%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '6px 10px',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            color: '#cbd5e1',
+                            textAlign: 'left',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <Server size={13} color="#38bdf8" />
+                            <span>{c.name}</span>
+                          </div>
+                          <span style={{ fontSize: '10px', color: '#64748b' }}>{c.host}</span>
+                        </button>
+                      ))}
+                  </div>
+
+                  <div style={{ height: '1px', background: '#1e2638', margin: '4px 0' }} />
+
+                  <button
+                    onClick={() => {
+                      setShowAddTabMenu(false);
+                      setShowConnModal(true);
+                    }}
+                    style={{
+                      width: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '8px 10px',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      color: '#38bdf8',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <Plus size={14} />
+                    <span>主机资产管理中心...</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Global Controls & Status */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          {/* Session Recording Button (Asciinema .cast v2) */}
+          {/* Split Screen Control */}
+          <button
+            onClick={() => setIsSplitScreen(!isSplitScreen)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: 500,
+              background: isSplitScreen ? 'rgba(56, 189, 248, 0.2)' : 'rgba(30, 41, 59, 0.5)',
+              color: isSplitScreen ? '#38bdf8' : '#94a3b8',
+              border: isSplitScreen ? '1px solid rgba(56, 189, 248, 0.5)' : '1px solid #1e2638',
+            }}
+            title="双屏分屏终端"
+          >
+            <SplitSquareVertical size={13} />
+            {isSplitScreen ? '分屏中' : '分屏'}
+          </button>
+
+          {/* Session Recording Button */}
           <button
             onClick={toggleRecording}
             style={{
@@ -642,7 +965,6 @@ export function App() {
               background: isRecording ? 'rgba(239, 68, 68, 0.2)' : 'rgba(30, 41, 59, 0.5)',
               color: isRecording ? '#ef4444' : '#94a3b8',
               border: isRecording ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid #1e2638',
-              cursor: 'pointer',
             }}
           >
             <Video size={13} />
@@ -668,41 +990,8 @@ export function App() {
             }}
           >
             <Radio size={13} />
-            {broadcastEnabled ? '广播同步开启' : '广播输入'}
+            {broadcastEnabled ? '广播已开启' : '广播输入'}
           </button>
-
-          {/* Split Screen Control */}
-          <button
-            style={{
-              padding: '6px',
-              borderRadius: '6px',
-              color: '#94a3b8',
-              display: 'flex',
-              alignItems: 'center',
-              background: '#171d2d',
-            }}
-            title="分屏视图"
-          >
-            <SplitSquareVertical size={14} />
-          </button>
-
-          {/* MCP Server Badge */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '4px 10px',
-              borderRadius: '6px',
-              fontSize: '11px',
-              background: 'rgba(16, 185, 129, 0.1)',
-              border: '1px solid rgba(16, 185, 129, 0.3)',
-              color: '#34d399',
-            }}
-          >
-            <Zap size={11} />
-            MCP: 12335
-          </div>
 
           {/* PTY Live Connection Badge */}
           <div
@@ -727,10 +1016,10 @@ export function App() {
                 boxShadow: wsConnected ? '0 0 8px #10b981' : 'none',
               }}
             />
-            {wsConnected ? 'PTY: Online' : 'PTY: Offline'}
+            {wsConnected ? 'PTY 在线' : 'PTY 离线'}
           </div>
 
-          {/* Vault Status Badge */}
+          {/* Vault Badge */}
           <div
             style={{
               display: 'flex',
@@ -745,12 +1034,12 @@ export function App() {
             }}
           >
             <Shield size={11} />
-            {vaultUnlocked ? 'Vault: E2EE' : 'Vault: Locked'}
+            {vaultUnlocked ? 'Vault: E2EE' : 'Vault: 锁定'}
           </div>
         </div>
       </header>
 
-      {/* 2. Main Body Layout (Left Sidebar + Center Terminal + Right Auxiliary Drawer) */}
+      {/* 2. Main Body Layout */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Left Vertical Tool Dock */}
         <aside
@@ -773,7 +1062,6 @@ export function App() {
               borderRadius: '8px',
               color: activeDrawer === 'monitor' ? '#38bdf8' : '#94a3b8',
               background: activeDrawer === 'monitor' ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
-              transition: 'all 0.2s',
             }}
             title="服务器实时监控"
           >
@@ -787,7 +1075,6 @@ export function App() {
               borderRadius: '8px',
               color: activeDrawer === 'sftp' ? '#38bdf8' : '#94a3b8',
               background: activeDrawer === 'sftp' ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
-              transition: 'all 0.2s',
             }}
             title="SFTP 文件传输"
           >
@@ -801,7 +1088,6 @@ export function App() {
               borderRadius: '8px',
               color: activeDrawer === 'tunnels' ? '#38bdf8' : '#94a3b8',
               background: activeDrawer === 'tunnels' ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
-              transition: 'all 0.2s',
             }}
             title="端口转发与隧道"
           >
@@ -815,7 +1101,6 @@ export function App() {
               borderRadius: '8px',
               color: activeDrawer === 'ai' ? '#a855f7' : '#94a3b8',
               background: activeDrawer === 'ai' ? 'rgba(168, 85, 247, 0.15)' : 'transparent',
-              transition: 'all 0.2s',
             }}
             title="小易 AI 终端助手"
           >
@@ -824,19 +1109,30 @@ export function App() {
 
           <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <button
+              onClick={() => setShowConnModal(true)}
               style={{
                 padding: '10px',
                 borderRadius: '8px',
                 color: '#64748b',
               }}
-              title="系统设置"
+              title="主机资产中心"
+            >
+              <Server size={18} />
+            </button>
+            <button
+              style={{
+                padding: '10px',
+                borderRadius: '8px',
+                color: '#64748b',
+              }}
+              title="设置"
             >
               <Settings size={18} />
             </button>
           </div>
         </aside>
 
-        {/* Center Workspace (Terminal Window) */}
+        {/* Center Workspace (Quick Commands + Terminal Window) */}
         <main
           style={{
             flex: 1,
@@ -847,20 +1143,90 @@ export function App() {
             overflow: 'hidden',
           }}
         >
-          {/* Terminal View Container */}
+          {/* Quick Commands Bar (XTerminal Signature Feature) */}
           <div
-            ref={terminalRef}
-            className="terminal-container"
             style={{
-              flex: 1,
-              width: '100%',
-              height: '100%',
-              overflow: 'hidden',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '6px 12px',
+              background: '#0f1420',
+              borderBottom: '1px solid #1e2638',
+              overflowX: 'auto',
             }}
-          />
+          >
+            <span style={{ fontSize: '11px', color: '#64748b', whiteSpace: 'nowrap' }}>快捷指令:</span>
+            {QUICK_COMMANDS.map((qc, idx) => (
+              <button
+                key={idx}
+                onClick={() => runQuickCommand(qc.cmd)}
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: '4px',
+                  fontSize: '11px',
+                  background: '#171d2d',
+                  color: '#cbd5e1',
+                  border: '1px solid #1e2638',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {qc.label}
+              </button>
+            ))}
+
+            <button
+              onClick={handleDiagnoseError}
+              style={{
+                marginLeft: 'auto',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '3px 8px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                background: 'rgba(168, 85, 247, 0.15)',
+                color: '#c084fc',
+                border: '1px solid rgba(168, 85, 247, 0.3)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <Zap size={11} /> 诊断报错
+            </button>
+          </div>
+
+          {/* Terminal Panes */}
+          <div style={{ flex: 1, display: 'flex', width: '100%', height: '100%', overflow: 'hidden' }}>
+            {/* Main Terminal */}
+            <div
+              ref={mainTermRef}
+              className="terminal-container"
+              style={{
+                flex: 1,
+                width: isSplitScreen ? '50%' : '100%',
+                height: '100%',
+                overflow: 'hidden',
+                borderRight: isSplitScreen ? '1px solid #1e2638' : 'none',
+              }}
+            />
+
+            {/* Split Screen Terminal */}
+            {isSplitScreen && (
+              <div
+                ref={splitTermRef}
+                className="terminal-container"
+                style={{
+                  flex: 1,
+                  width: '50%',
+                  height: '100%',
+                  overflow: 'hidden',
+                  background: '#070a10',
+                }}
+              />
+            )}
+          </div>
         </main>
 
-        {/* Right Drawer (Collapsible Panels: Monitor / SFTP / Tunnels / AI) */}
+        {/* Right Drawer */}
         {activeDrawer && (
           <aside
             style={{
@@ -919,11 +1285,10 @@ export function App() {
 
             {/* Drawer Content */}
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {/* 1. MONITOR PANEL */}
+              {/* 1. MONITOR */}
               {activeDrawer === 'monitor' && (
                 <>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                    {/* CPU Card */}
                     <div style={{ background: '#171d2d', padding: '12px', borderRadius: '8px', border: '1px solid #1e2638' }}>
                       <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>CPU 核心占用</div>
                       <div style={{ fontSize: '20px', fontWeight: 700, color: '#38bdf8' }}>{cpuUsage.toFixed(1)}%</div>
@@ -931,7 +1296,6 @@ export function App() {
                         <div style={{ width: `${cpuUsage}%`, height: '100%', background: '#38bdf8', transition: 'width 0.5s' }} />
                       </div>
                     </div>
-                    {/* Memory Card */}
                     <div style={{ background: '#171d2d', padding: '12px', borderRadius: '8px', border: '1px solid #1e2638' }}>
                       <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>物理内存 (16GB)</div>
                       <div style={{ fontSize: '20px', fontWeight: 700, color: '#10b981' }}>{memUsage.toFixed(1)}%</div>
@@ -941,7 +1305,6 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* Network Bandwidth */}
                   <div style={{ background: '#171d2d', padding: '12px', borderRadius: '8px', border: '1px solid #1e2638' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '8px' }}>
                       <span style={{ color: '#94a3b8' }}>网卡实时吞吐 (eth0)</span>
@@ -960,7 +1323,6 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* Disk Partitions */}
                   <div style={{ background: '#171d2d', padding: '12px', borderRadius: '8px', border: '1px solid #1e2638' }}>
                     <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '10px' }}>磁盘挂载空间</div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -973,74 +1335,19 @@ export function App() {
                           <div style={{ width: '42%', height: '100%', background: '#38bdf8' }} />
                         </div>
                       </div>
-                      <div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#cbd5e1' }}>
-                          <span>/data (NVMe)</span>
-                          <span>136 GB / 200 GB (68%)</span>
-                        </div>
-                        <div style={{ width: '100%', height: '4px', background: '#222b42', borderRadius: '2px', marginTop: '4px' }}>
-                          <div style={{ width: '68%', height: '100%', background: '#f59e0b' }} />
-                        </div>
-                      </div>
                     </div>
-                  </div>
-
-                  {/* Top Processes */}
-                  <div style={{ background: '#171d2d', padding: '12px', borderRadius: '8px', border: '1px solid #1e2638', flex: 1 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
-                      <span>实时进程列表 (Top 4)</span>
-                      <RefreshCw size={12} style={{ cursor: 'pointer' }} />
-                    </div>
-                    <table style={{ width: '100%', fontSize: '11px', borderCollapse: 'collapse', textAlign: 'left' }}>
-                      <thead>
-                        <tr style={{ color: '#64748b', borderBottom: '1px solid #222b42' }}>
-                          <th style={{ padding: '4px 0' }}>PID</th>
-                          <th>进程名</th>
-                          <th>CPU</th>
-                          <th>内存</th>
-                        </tr>
-                      </thead>
-                      <tbody style={{ color: '#cbd5e1' }}>
-                        <tr>
-                          <td style={{ padding: '6px 0' }}>1428</td>
-                          <td>dockerd</td>
-                          <td style={{ color: '#38bdf8' }}>14.2%</td>
-                          <td>4.1%</td>
-                        </tr>
-                        <tr>
-                          <td style={{ padding: '6px 0' }}>2091</td>
-                          <td>postgres</td>
-                          <td style={{ color: '#38bdf8' }}>6.8%</td>
-                          <td>18.4%</td>
-                        </tr>
-                        <tr>
-                          <td style={{ padding: '6px 0' }}>3102</td>
-                          <td>nginx</td>
-                          <td style={{ color: '#38bdf8' }}>2.1%</td>
-                          <td>0.8%</td>
-                        </tr>
-                        <tr>
-                          <td style={{ padding: '6px 0' }}>89</td>
-                          <td>systemd-journal</td>
-                          <td style={{ color: '#38bdf8' }}>0.4%</td>
-                          <td>0.5%</td>
-                        </tr>
-                      </tbody>
-                    </table>
                   </div>
                 </>
               )}
 
-              {/* 2. SFTP FILE MANAGER PANEL */}
+              {/* 2. SFTP FILE WORKSPACE */}
               {activeDrawer === 'sftp' && (
                 <>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <input
                       value={sftpPath}
                       onChange={(e) => setSftpPath(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') loadSftpList(sftpPath);
-                      }}
+                      onKeyDown={(e) => e.key === 'Enter' && loadSftpList(sftpPath)}
                       style={{
                         flex: 1,
                         background: '#171d2d',
@@ -1052,6 +1359,13 @@ export function App() {
                       }}
                     />
                     <button
+                      onClick={handleCreateFolder}
+                      style={{ padding: '6px', background: '#171d2d', borderRadius: '6px', color: '#94a3b8' }}
+                      title="新建文件夹"
+                    >
+                      <FolderPlus size={14} />
+                    </button>
+                    <button
                       onClick={() => loadSftpList(sftpPath)}
                       style={{ padding: '6px', background: '#171d2d', borderRadius: '6px', color: '#94a3b8' }}
                       title="刷新"
@@ -1060,8 +1374,8 @@ export function App() {
                     </button>
                   </div>
 
+                  {/* File List */}
                   <div style={{ background: '#171d2d', borderRadius: '8px', border: '1px solid #1e2638', flex: 1, padding: '8px', overflowY: 'auto' }}>
-                    {/* Parent Dir Button */}
                     <div
                       onClick={() => {
                         const parts = sftpPath.replace(/\/+$/, '').split('/');
@@ -1087,16 +1401,7 @@ export function App() {
                       <span>.. (上级目录)</span>
                     </div>
 
-                    {(sftpEntries.length > 0
-                      ? sftpEntries
-                      : [
-                          { name: 'Cargo.toml', is_dir: false, size_bytes: 2048 },
-                          { name: 'crates', is_dir: true, size_bytes: 0 },
-                          { name: 'apps', is_dir: true, size_bytes: 0 },
-                          { name: 'doc', is_dir: true, size_bytes: 0 },
-                          { name: 'README.md', is_dir: false, size_bytes: 1234 },
-                        ]
-                    ).map((f, i) => (
+                    {sftpEntries.map((f, i) => (
                       <div
                         key={i}
                         onClick={() => {
@@ -1123,14 +1428,26 @@ export function App() {
                           {f.is_dir ? <FolderTree size={14} color="#f59e0b" /> : <Code size={14} color="#38bdf8" />}
                           <span>{f.name}</span>
                         </div>
-                        <span style={{ fontSize: '11px', color: '#64748b' }}>
-                          {f.is_dir ? '目录' : `${(f.size_bytes / 1024).toFixed(1)} KB`}
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '11px', color: '#64748b' }}>
+                            {f.is_dir ? '目录' : `${(f.size_bytes / 1024).toFixed(1)} KB`}
+                          </span>
+                          <button
+                            onClick={(e) => handleDeleteFile(f.path || `${sftpPath}/${f.name}`, e)}
+                            style={{ color: '#64748b' }}
+                            title="删除"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
 
+                  {/* Upload Target */}
+                  <input type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: 'none' }} />
                   <div
+                    onClick={() => fileInputRef.current?.click()}
                     style={{
                       border: '1px dashed #2a3552',
                       borderRadius: '8px',
@@ -1142,48 +1459,115 @@ export function App() {
                       flexDirection: 'column',
                       alignItems: 'center',
                       gap: '6px',
+                      cursor: 'pointer',
                     }}
                   >
                     <UploadCloud size={20} color="#38bdf8" />
-                    <span>拖拽文件至此快速上传 (Tar/Zstd 智能加速)</span>
+                    <span>点击或拖拽文件上传 (直接同步至远端)</span>
                   </div>
                 </>
               )}
 
-              {/* 3. TUNNELS PANEL */}
+              {/* 3. TUNNELS */}
               {activeDrawer === 'tunnels' && (
                 <>
-                  <div style={{ background: '#171d2d', padding: '12px', borderRadius: '8px', border: '1px solid #1e2638' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <span style={{ fontWeight: 600, fontSize: '13px', color: '#f8fafc' }}>MySQL 生产只读库映射</span>
-                      <span style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.1)', color: '#34d399' }}>本地转发 (-L)</span>
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '10px' }}>
-                      <code>127.0.0.1:3307</code> ➜ <code>10.240.1.5:3306</code>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#64748b' }}>
-                      <span>流量: 28.4 MB</span>
-                      <span style={{ color: '#10b981' }}>● 监听中</span>
-                    </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {tunnels.map((t) => (
+                      <div key={t.id} style={{ background: '#171d2d', padding: '12px', borderRadius: '8px', border: '1px solid #1e2638' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <span style={{ fontWeight: 600, fontSize: '13px', color: '#f8fafc' }}>{t.name}</span>
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              background: t.tunnelType === 'local' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(168, 85, 247, 0.1)',
+                              color: t.tunnelType === 'local' ? '#34d399' : '#c084fc',
+                            }}
+                          >
+                            {t.tunnelType === 'local' ? '本地转发 (-L)' : '动态代理 (-D)'}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+                          127.0.0.1:{t.localPort} {t.tunnelType === 'local' ? `➜ ${t.remoteHost}:${t.remotePort}` : '(SOCKS5)'}
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '11px', color: t.running ? '#10b981' : '#64748b' }}>
+                            {t.running ? '● 正在监听' : '○ 已停止'}
+                          </span>
+                          <button
+                            onClick={() => handleToggleTunnel(t.id)}
+                            style={{
+                              fontSize: '11px',
+                              padding: '3px 8px',
+                              borderRadius: '4px',
+                              background: t.running ? '#dc2626' : '#0284c7',
+                              color: '#fff',
+                            }}
+                          >
+                            {t.running ? '停止' : '启动'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
+                  {/* Add Tunnel Form */}
                   <div style={{ background: '#171d2d', padding: '12px', borderRadius: '8px', border: '1px solid #1e2638' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <span style={{ fontWeight: 600, fontSize: '13px', color: '#f8fafc' }}>内网 SOCKS5 动态代理</span>
-                      <span style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '4px', background: 'rgba(168, 85, 247, 0.1)', color: '#c084fc' }}>动态代理 (-D)</span>
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '10px' }}>
-                      本地端口: <code>127.0.0.1:1080</code> (RFC 1928)
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#64748b' }}>
-                      <span>活跃连接: 4</span>
-                      <span style={{ color: '#10b981' }}>● 监听中</span>
+                    <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '8px', color: '#f8fafc' }}>新建端口转发</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <input
+                        placeholder="隧道名称 (如: Redis 映射)"
+                        value={newTunnelName}
+                        onChange={(e) => setNewTunnelName(e.target.value)}
+                        style={{ background: '#0a0d14', border: '1px solid #1e2638', padding: '6px 10px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                      />
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <select
+                          value={newTunnelType}
+                          onChange={(e) => setNewTunnelType(e.target.value as any)}
+                          style={{ background: '#0a0d14', border: '1px solid #1e2638', padding: '6px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                        >
+                          <option value="local">本地转发 (-L)</option>
+                          <option value="socks5">动态代理 (-D)</option>
+                        </select>
+                        <input
+                          placeholder="本地端口"
+                          type="number"
+                          value={newTunnelLocalPort}
+                          onChange={(e) => setNewTunnelLocalPort(Number(e.target.value))}
+                          style={{ flex: 1, background: '#0a0d14', border: '1px solid #1e2638', padding: '6px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                        />
+                      </div>
+                      {newTunnelType === 'local' && (
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <input
+                            placeholder="远端主机"
+                            value={newTunnelRemoteHost}
+                            onChange={(e) => setNewTunnelRemoteHost(e.target.value)}
+                            style={{ flex: 2, background: '#0a0d14', border: '1px solid #1e2638', padding: '6px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                          />
+                          <input
+                            placeholder="端口"
+                            type="number"
+                            value={newTunnelRemotePort}
+                            onChange={(e) => setNewTunnelRemotePort(Number(e.target.value))}
+                            style={{ flex: 1, background: '#0a0d14', border: '1px solid #1e2638', padding: '6px', borderRadius: '6px', color: '#e2e8f0', fontSize: '12px' }}
+                          />
+                        </div>
+                      )}
+                      <button
+                        onClick={handleAddTunnel}
+                        style={{ padding: '6px', background: '#0284c7', color: '#fff', borderRadius: '6px', fontSize: '12px', fontWeight: 600 }}
+                      >
+                        创建并监听
+                      </button>
                     </div>
                   </div>
                 </>
               )}
 
-              {/* 4. AI COPILOT PANEL */}
+              {/* 4. AI COPILOT */}
               {activeDrawer === 'ai' && (
                 <>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto' }}>
@@ -1209,7 +1593,7 @@ export function App() {
                             <code style={{ color: '#38bdf8', fontSize: '11px', wordBreak: 'break-all' }}>{msg.code}</code>
                             <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
                               <button
-                                onClick={() => injectCodeToTerminal(msg.code!)}
+                                onClick={() => runQuickCommand(msg.code!)}
                                 style={{
                                   display: 'flex',
                                   alignItems: 'center',
@@ -1228,6 +1612,7 @@ export function App() {
                         )}
                       </div>
                     ))}
+                    {aiLoading && <div style={{ fontSize: '12px', color: '#a855f7' }}>小易正在思考分析...</div>}
                   </div>
 
                   <div style={{ display: 'flex', gap: '8px', marginTop: 'auto' }}>
@@ -1235,7 +1620,7 @@ export function App() {
                       value={aiInput}
                       onChange={(e) => setAiInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSendAi()}
-                      placeholder="问小易：查找大于 100M 的日志、诊断 502 报错..."
+                      placeholder="问小易：诊断 502 错误、排查网络延迟..."
                       style={{
                         flex: 1,
                         background: '#171d2d',
@@ -1323,7 +1708,6 @@ export function App() {
               overflow: 'hidden',
             }}
           >
-            {/* Modal Header */}
             <div
               style={{
                 display: 'flex',
@@ -1358,23 +1742,17 @@ export function App() {
                     fontWeight: 600,
                     background: '#0284c7',
                     color: '#fff',
-                    border: 'none',
-                    cursor: 'pointer',
                   }}
                 >
                   <Save size={14} />
                   {editingFile.saving ? '保存中...' : '保存并同步 (Ctrl+S)'}
                 </button>
-                <button
-                  onClick={() => setEditingFile(null)}
-                  style={{ color: '#94a3b8', background: 'transparent', border: 'none', cursor: 'pointer' }}
-                >
+                <button onClick={() => setEditingFile(null)} style={{ color: '#94a3b8' }}>
                   <X size={18} />
                 </button>
               </div>
             </div>
 
-            {/* Editor Textarea */}
             <div style={{ flex: 1, padding: '16px', background: '#0a0d14' }}>
               <textarea
                 value={editingFile.content}
@@ -1420,7 +1798,7 @@ export function App() {
         >
           <div
             style={{
-              width: '750px',
+              width: '800px',
               maxWidth: '95vw',
               background: '#0f1420',
               border: '1px solid #222b42',
@@ -1446,19 +1824,40 @@ export function App() {
                 <Server size={18} color="#38bdf8" />
                 <span style={{ fontWeight: 600, fontSize: '15px', color: '#f8fafc' }}>服务器与主机资产中心</span>
               </div>
-              <button
-                onClick={() => setShowConnModal(false)}
-                style={{ color: '#94a3b8', background: 'transparent', border: 'none', cursor: 'pointer' }}
-              >
-                <X size={18} />
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button
+                  onClick={handleImportSshConfig}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    background: 'rgba(56, 189, 248, 0.15)',
+                    color: '#38bdf8',
+                    border: '1px solid rgba(56, 189, 248, 0.3)',
+                  }}
+                  title="自动从本地 ~/.ssh/config 发现并导入主机"
+                >
+                  <RefreshCw size={12} /> 一键同步 ~/.ssh/config
+                </button>
+                <button onClick={() => setShowConnModal(false)} style={{ color: '#94a3b8' }}>
+                  <X size={18} />
+                </button>
+              </div>
             </div>
+
+            {connToast && (
+              <div style={{ padding: '8px 20px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontSize: '12px', borderBottom: '1px solid #1e2638' }}>
+                {connToast}
+              </div>
+            )}
 
             {/* Body */}
             <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', maxHeight: '70vh', overflowY: 'auto' }}>
-              {/* Existing Connections */}
               <div>
-                <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '10px', fontWeight: 500 }}>已保存的主机节点</div>
+                <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '10px', fontWeight: 500 }}>已保存的主机节点 ({connections.length})</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {connections.map((c) => (
                     <div
@@ -1488,39 +1887,45 @@ export function App() {
                               fontSize: '10px',
                               padding: '2px 8px',
                               borderRadius: '4px',
-                              background: 'rgba(56, 189, 248, 0.1)',
-                              color: '#38bdf8',
-                              border: '1px solid rgba(56, 189, 248, 0.2)',
+                              background: t === 'SSH Config' ? 'rgba(168, 85, 247, 0.15)' : 'rgba(56, 189, 248, 0.1)',
+                              color: t === 'SSH Config' ? '#c084fc' : '#38bdf8',
+                              border: t === 'SSH Config' ? '1px solid rgba(168, 85, 247, 0.3)' : '1px solid rgba(56, 189, 248, 0.2)',
                             }}
                           >
                             {t}
                           </span>
                         ))}
                       </div>
-                      <button
-                        onClick={() => {
-                          setActiveTab(c.name);
-                          setShowConnModal(false);
-                        }}
-                        style={{
-                          padding: '6px 14px',
-                          borderRadius: '6px',
-                          background: '#0284c7',
-                          color: '#fff',
-                          fontSize: '12px',
-                          fontWeight: 500,
-                          border: 'none',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        快速连接
-                      </button>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button
+                          onClick={() => handleConnectHost(c)}
+                          style={{
+                            padding: '6px 14px',
+                            borderRadius: '6px',
+                            background: '#0284c7',
+                            color: '#fff',
+                            fontSize: '12px',
+                            fontWeight: 500,
+                          }}
+                        >
+                          快速连接
+                        </button>
+                        {c.protocol !== 'localpty' && (
+                          <button
+                            onClick={(e) => handleDeleteConnection(c.id, e)}
+                            style={{ color: '#64748b', padding: '6px' }}
+                            title="删除配置"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Add New Connection Form */}
+              {/* Add New Form */}
               <div style={{ borderTop: '1px solid #1e2638', paddingTop: '16px' }}>
                 <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '12px', fontWeight: 500 }}>新增 SSH 主机节点</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -1567,8 +1972,6 @@ export function App() {
                     borderRadius: '6px',
                     fontSize: '13px',
                     fontWeight: 600,
-                    border: 'none',
-                    cursor: 'pointer',
                   }}
                 >
                   保存并加入主机资产库
