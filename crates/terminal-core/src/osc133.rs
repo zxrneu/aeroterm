@@ -196,12 +196,12 @@ mod tests {
     #[test]
     fn test_osc7_cwd_change() {
         let mut parser = Osc133Parser::new();
-        let cwd_bytes = b"\x1b]7;file://zxr-MacBook-Pro.local/Users/zxr/coding/terminal_pro\x07";
+        let cwd_bytes = b"\x1b]7;file://zxr-MacBook-Pro.local/Users/zxr/coding/aeroterm\x07";
         let events = parser.process_bytes(cwd_bytes);
         assert_eq!(
             events,
             vec![ShellIntegrationEvent::CwdChanged(
-                "/Users/zxr/coding/terminal_pro".to_string()
+                "/Users/zxr/coding/aeroterm".to_string()
             )]
         );
     }
