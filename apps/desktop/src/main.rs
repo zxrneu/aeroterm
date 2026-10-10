@@ -42,7 +42,10 @@ async fn main() -> anyhow::Result<()> {
     let inventory_mgr = InventoryManager::new_default();
     if let Ok(count) = inventory_mgr.import_ssh_config().await {
         if count > 0 {
-            info!("Auto-discovered and imported {} hosts from ~/.ssh/config", count);
+            info!(
+                "Auto-discovered and imported {} hosts from ~/.ssh/config",
+                count
+            );
         }
     }
     let ai_config = AiClientConfig::default();
@@ -111,7 +114,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Auto-open default browser on macOS unless AEROTERM_NO_OPEN is set
-    if std::env::var("AEROTERM_NO_OPEN").is_err() && std::env::var("TERMINAL_PRO_NO_OPEN").is_err() {
+    if std::env::var("AEROTERM_NO_OPEN").is_err() && std::env::var("TERMINAL_PRO_NO_OPEN").is_err()
+    {
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
             #[cfg(target_os = "macos")]

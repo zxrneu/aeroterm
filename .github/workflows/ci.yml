@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (Typecheck & Build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: 'apps/web-ui/pnpm-lock.yaml'
+
+      - name: Install dependencies
+        working-directory: apps/web-ui
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: apps/web-ui
+        run: pnpm run build
+
+      - name: Upload frontend dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-ui-dist
+          path: apps/web-ui/dist
+          retention-days: 1
+
+  rust-ci:
+    name: Rust (${{ matrix.os }})
+    needs: frontend
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-ui-dist
+          path: apps/web-ui/dist
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check code formatting
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --workspace --all-targets
+
+      - name: Cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Cargo test
+        run: cargo test --workspace --verbose
+
+  macos-package:
+    name: Package macOS DMG
+    needs: [frontend, rust-ci]
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-ui-dist
+          path: apps/web-ui/dist
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run macOS Packaging Pipeline
+        run: ./scripts/package_macos.sh
+
+      - name: Upload DMG Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AeroTerm-macOS-DMG
+          path: target/AeroTerm_v0.1.0_macOS.dmg
+          retention-days: 7

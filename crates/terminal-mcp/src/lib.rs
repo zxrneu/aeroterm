@@ -47,8 +47,7 @@ impl McpServerState {
         let tools = vec![
             McpToolDefinition {
                 name: "list_connections".to_string(),
-                description: "List all configured servers and connections in AeroTerm"
-                    .to_string(),
+                description: "List all configured servers and connections in AeroTerm".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {}

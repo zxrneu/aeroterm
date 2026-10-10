@@ -110,8 +110,9 @@ async fn static_or_spa_handler(uri: axum::http::Uri) -> Response {
                 axum::http::StatusCode::OK,
                 [(
                     axum::http::header::CONTENT_TYPE,
-                    axum::http::HeaderValue::from_str(mime.as_ref())
-                        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
+                    axum::http::HeaderValue::from_str(mime.as_ref()).unwrap_or_else(|_| {
+                        axum::http::HeaderValue::from_static("application/octet-stream")
+                    }),
                 )],
                 content.data,
             )
@@ -519,7 +520,9 @@ async fn sftp_delete(
         tokio::fs::remove_file(path).await
     };
     match res {
-        Ok(_) => Ok(Json(serde_json::json!({ "success": true, "path": payload.path }))),
+        Ok(_) => Ok(Json(
+            serde_json::json!({ "success": true, "path": payload.path }),
+        )),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to delete: {}", e),
@@ -532,7 +535,9 @@ async fn sftp_mkdir(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let path = std::path::Path::new(&payload.path);
     match tokio::fs::create_dir_all(path).await {
-        Ok(_) => Ok(Json(serde_json::json!({ "success": true, "path": payload.path }))),
+        Ok(_) => Ok(Json(
+            serde_json::json!({ "success": true, "path": payload.path }),
+        )),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to create dir: {}", e),
@@ -589,7 +594,11 @@ async fn ws_terminal_handler(
                             }
                         }
                     }
-                    _ => match state.session_mgr.get_or_create_session(&id, None, 24, 80).await {
+                    _ => match state
+                        .session_mgr
+                        .get_or_create_session(&id, None, 24, 80)
+                        .await
+                    {
                         Ok(s) => s,
                         Err(e) => {
                             return (
@@ -600,7 +609,11 @@ async fn ws_terminal_handler(
                         }
                     },
                 },
-                None => match state.session_mgr.get_or_create_session(&id, None, 24, 80).await {
+                None => match state
+                    .session_mgr
+                    .get_or_create_session(&id, None, 24, 80)
+                    .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         return (

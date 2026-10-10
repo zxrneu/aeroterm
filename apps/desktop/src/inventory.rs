@@ -19,8 +19,12 @@ impl InventoryManager {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
-        let aeroterm_path = PathBuf::from(&home).join(".aeroterm").join("connections.json");
-        let legacy_path = PathBuf::from(&home).join(".terminal_pro").join("connections.json");
+        let aeroterm_path = PathBuf::from(&home)
+            .join(".aeroterm")
+            .join("connections.json");
+        let legacy_path = PathBuf::from(&home)
+            .join(".terminal_pro")
+            .join("connections.json");
         let file_path = if aeroterm_path.exists() {
             aeroterm_path
         } else if legacy_path.exists() {
@@ -157,9 +161,8 @@ impl InventoryManager {
             return Ok(0);
         }
 
-        let content = fs::read_to_string(&ssh_config_path).map_err(|e| {
-            TerminalError::Config(format!("Failed to read ~/.ssh/config: {}", e))
-        })?;
+        let content = fs::read_to_string(&ssh_config_path)
+            .map_err(|e| TerminalError::Config(format!("Failed to read ~/.ssh/config: {}", e)))?;
 
         let mut imported = 0;
         let mut current_host = String::new();
@@ -167,21 +170,22 @@ impl InventoryManager {
         let mut current_user = "root".to_string();
         let mut current_port: u16 = 22;
 
-        let commit_entry = |host: &str, hostname: &str, user: &str, port: u16| -> Option<Connection> {
-            if host.is_empty() || host == "*" || host.contains('?') || host.contains('*') {
-                return None;
-            }
-            let target_host = if hostname.is_empty() { host } else { hostname };
-            let mut conn = Connection::new_ssh(
-                host.to_string(),
-                target_host.to_string(),
-                port,
-                user.to_string(),
-                AuthMethod::AskEveryTime,
-            );
-            conn.tags = vec!["SSH Config".to_string()];
-            Some(conn)
-        };
+        let commit_entry =
+            |host: &str, hostname: &str, user: &str, port: u16| -> Option<Connection> {
+                if host.is_empty() || host == "*" || host.contains('?') || host.contains('*') {
+                    return None;
+                }
+                let target_host = if hostname.is_empty() { host } else { hostname };
+                let mut conn = Connection::new_ssh(
+                    host.to_string(),
+                    target_host.to_string(),
+                    port,
+                    user.to_string(),
+                    AuthMethod::AskEveryTime,
+                );
+                conn.tags = vec!["SSH Config".to_string()];
+                Some(conn)
+            };
 
         let mut new_conns = Vec::new();
         for line in content.lines() {
@@ -196,7 +200,12 @@ impl InventoryManager {
 
             match key.as_str() {
                 "host" => {
-                    if let Some(conn) = commit_entry(&current_host, &current_hostname, &current_user, current_port) {
+                    if let Some(conn) = commit_entry(
+                        &current_host,
+                        &current_hostname,
+                        &current_user,
+                        current_port,
+                    ) {
                         new_conns.push(conn);
                     }
                     current_host = value.to_string();
@@ -218,7 +227,12 @@ impl InventoryManager {
                 _ => {}
             }
         }
-        if let Some(conn) = commit_entry(&current_host, &current_hostname, &current_user, current_port) {
+        if let Some(conn) = commit_entry(
+            &current_host,
+            &current_hostname,
+            &current_user,
+            current_port,
+        ) {
             new_conns.push(conn);
         }
 

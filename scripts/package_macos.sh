@@ -4,9 +4,16 @@ set -e
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
 
-echo "=== 1. Building Frontend Assets (apps/web-ui) ==="
-cd "$DIR/apps/web-ui"
-npm run build
+echo "=== 1. Checking / Building Frontend Assets (apps/web-ui) ==="
+if [ ! -f "$DIR/apps/web-ui/dist/index.html" ]; then
+    cd "$DIR/apps/web-ui"
+    if command -v pnpm >/dev/null 2>&1; then
+        pnpm run build
+    else
+        npm run build
+    fi
+    cd "$DIR"
+fi
 
 echo "=== 2. Building Release Rust Binary (terminal-desktop) ==="
 cd "$DIR"
