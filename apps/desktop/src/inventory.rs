@@ -19,8 +19,15 @@ impl InventoryManager {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
-        let data_dir = PathBuf::from(home).join(".terminal_pro");
-        let file_path = data_dir.join("connections.json");
+        let aeroterm_path = PathBuf::from(&home).join(".aeroterm").join("connections.json");
+        let legacy_path = PathBuf::from(&home).join(".terminal_pro").join("connections.json");
+        let file_path = if aeroterm_path.exists() {
+            aeroterm_path
+        } else if legacy_path.exists() {
+            legacy_path
+        } else {
+            aeroterm_path
+        };
         Self::new(file_path)
     }
 

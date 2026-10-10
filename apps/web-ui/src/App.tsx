@@ -156,7 +156,7 @@ export function App() {
   const [aiMessages, setAiMessages] = useState<Array<{ sender: 'user' | 'assistant'; text: string; code?: string }>>([
     {
       sender: 'assistant',
-      text: '你好！我是 TerminalPro 终端智能助手“小易”。我可以直接解释命令、分析报错、或者为你自动生成运维管理脚本。',
+      text: '你好！我是 AeroTerm 终端智能助手“小易”。我可以直接解释命令、分析报错、或者为你自动生成运维管理脚本。',
     },
   ]);
 
@@ -311,7 +311,7 @@ export function App() {
         width: cols,
         height: rows,
         timestamp: Math.floor(recordingStartRef.current / 1000),
-        title: `TerminalPro Session (${activeTabId})`,
+        title: `AeroTerm Session (${activeTabId})`,
       };
       const lines = [JSON.stringify(header)];
       for (const ev of recordingEventsRef.current) {
@@ -321,7 +321,7 @@ export function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `terminalpro_${activeTabId}_${Date.now()}.cast`;
+      a.download = `aeroterm_${activeTabId}_${Date.now()}.cast`;
       a.click();
       URL.revokeObjectURL(url);
     }
@@ -397,7 +397,7 @@ export function App() {
     setEditingFile({
       path: filePath,
       name: file.name,
-      content: `# TerminalPro Remote File: ${file.name}\n# Path: ${filePath}\n\n# Loaded content...`,
+      content: `# AeroTerm Remote File: ${file.name}\n# Path: ${filePath}\n\n# Loaded content...`,
       saving: false,
     });
   };
@@ -773,7 +773,7 @@ export function App() {
               <TerminalIcon size={16} />
             </div>
             <span style={{ fontWeight: 700, fontSize: '15px', letterSpacing: '-0.3px', color: '#f8fafc' }}>
-              Terminal<span style={{ color: '#38bdf8' }}>Pro</span>
+              Aero<span style={{ color: '#38bdf8' }}>Term</span>
             </span>
           </div>
 

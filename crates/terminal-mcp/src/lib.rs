@@ -47,7 +47,7 @@ impl McpServerState {
         let tools = vec![
             McpToolDefinition {
                 name: "list_connections".to_string(),
-                description: "List all configured servers and connections in TerminalPro"
+                description: "List all configured servers and connections in AeroTerm"
                     .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -131,7 +131,7 @@ pub fn create_mcp_router(state: McpServerState) -> Router {
 async fn health_handler() -> impl IntoResponse {
     Json(json!({
         "status": "ok",
-        "service": "TerminalPro MCP",
+        "service": "AeroTerm MCP",
         "version": "0.1.0"
     }))
 }

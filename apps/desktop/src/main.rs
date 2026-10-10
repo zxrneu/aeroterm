@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     println!(
         r#"
   ======================================================
-     TerminalPro (XTerminal Benchmark Workstation)
+     AeroTerm (Ultra-Lightweight Workstation)
      Pure Rust Async Engine | Multi-Tab | MCP | AI
   ======================================================
 "#
@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Initialize Vault
     let mut vault = CredentialVault::new();
-    vault.initialize("TerminalPro_Default_Vault_Key_2026")?;
+    vault.initialize("AeroTerm_Default_Vault_Key_2026")?;
     info!("Credential Vault initialized with Argon2id + AES-256-GCM");
 
     // 3. Initialize Session Manager, Inventory & AI Copilot Client
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12335));
     info!(
-        "TerminalPro unified gateway server listening on http://{}",
+        "AeroTerm unified gateway server listening on http://{}",
         addr
     );
     info!("  - Web UI: http://{}/", addr);
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            tracing::warn!("TerminalPro is already running on port 12335. Opening browser tab...");
+            tracing::warn!("AeroTerm is already running on port 12335. Opening browser tab...");
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("open")
                 .arg("http://127.0.0.1:12335/")
@@ -110,8 +110,8 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     };
 
-    // Auto-open default browser on macOS unless TERMINAL_PRO_NO_OPEN is set
-    if std::env::var("TERMINAL_PRO_NO_OPEN").is_err() {
+    // Auto-open default browser on macOS unless AEROTERM_NO_OPEN is set
+    if std::env::var("AEROTERM_NO_OPEN").is_err() && std::env::var("TERMINAL_PRO_NO_OPEN").is_err() {
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
             #[cfg(target_os = "macos")]
@@ -130,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         _ = tokio::signal::ctrl_c() => {
-            info!("Received shutdown signal, terminating TerminalPro cleanly.");
+            info!("Received shutdown signal, terminating AeroTerm cleanly.");
         }
     }
 

@@ -13,7 +13,7 @@ cd "$DIR"
 cargo build --release -p terminal-desktop
 
 BUNDLE_DIR="$DIR/target/bundle/osx"
-APP_DIR="$BUNDLE_DIR/TerminalPro.app"
+APP_DIR="$BUNDLE_DIR/AeroTerm.app"
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources/web-ui"
@@ -21,12 +21,12 @@ mkdir -p "$APP_DIR/Contents/Resources/web-ui"
 echo "=== 3. Compiling Native Cocoa WebKit Workstation Window ==="
 /usr/bin/clang -fobjc-arc -O3 -framework Cocoa -framework WebKit \
   "$DIR/apps/desktop/resources/main.m" \
-  -o "$APP_DIR/Contents/MacOS/TerminalPro"
-chmod +x "$APP_DIR/Contents/MacOS/TerminalPro"
+  -o "$APP_DIR/Contents/MacOS/AeroTerm"
+chmod +x "$APP_DIR/Contents/MacOS/AeroTerm"
 
 echo "=== 4. Embedding Rust Backend Daemon ==="
-cp "$DIR/target/release/terminal-desktop" "$APP_DIR/Contents/MacOS/TerminalPro-backend"
-chmod +x "$APP_DIR/Contents/MacOS/TerminalPro-backend"
+cp "$DIR/target/release/terminal-desktop" "$APP_DIR/Contents/MacOS/AeroTerm-backend"
+chmod +x "$APP_DIR/Contents/MacOS/AeroTerm-backend"
 
 # Copy Icon and static assets
 if [ -f "$DIR/apps/desktop/resources/AppIcon.icns" ]; then
@@ -41,15 +41,15 @@ cat << 'PLIST' > "$APP_DIR/Contents/Info.plist"
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>TerminalPro</string>
+    <string>AeroTerm</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>cn.terminalpro.workstation</string>
+    <string>cn.aeroterm.workstation</string>
     <key>CFBundleName</key>
-    <string>TerminalPro</string>
+    <string>AeroTerm</string>
     <key>CFBundleDisplayName</key>
-    <string>TerminalPro</string>
+    <string>AeroTerm</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -84,10 +84,10 @@ mkdir -p "$DMG_STAGE"
 cp -r "$APP_DIR" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
 
-DMG_OUTPUT="$DIR/target/TerminalPro_v0.1.0_macOS.dmg"
+DMG_OUTPUT="$DIR/target/AeroTerm_v0.1.0_macOS.dmg"
 rm -f "$DMG_OUTPUT"
 
-hdiutil create -volname "TerminalPro Workstation" \
+hdiutil create -volname "AeroTerm Workstation" \
   -srcfolder "$DMG_STAGE" \
   -ov -format UDZO \
   "$DMG_OUTPUT"

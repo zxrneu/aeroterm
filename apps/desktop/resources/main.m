@@ -18,7 +18,7 @@
                        NSWindowStyleMaskMiniaturizable |
                        NSWindowStyleMaskResizable;
     self.window = [[NSWindow alloc] initWithContentRect:frame styleMask:style backing:NSBackingStoreBuffered defer:NO];
-    [self.window setTitle:@"TerminalPro Workstation"];
+    [self.window setTitle:@"AeroTerm Workstation"];
     [self.window setMinSize:NSMakeSize(900, 600)];
     self.window.delegate = self;
     self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
@@ -41,20 +41,21 @@
 
 - (void)startBackendAndLoad {
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
-    NSString *backendPath = [bundlePath stringByAppendingPathComponent:@"Contents/MacOS/TerminalPro-backend"];
+    NSString *backendPath = [bundlePath stringByAppendingPathComponent:@"Contents/MacOS/AeroTerm-backend"];
 
     if ([[NSFileManager defaultManager] fileExistsAtPath:backendPath]) {
         self.backendTask = [[NSTask alloc] init];
         [self.backendTask setExecutableURL:[NSURL fileURLWithPath:backendPath]];
 
         NSMutableDictionary *env = [[[NSProcessInfo processInfo] environment] mutableCopy];
+        env[@"AEROTERM_NO_OPEN"] = @"1";
         env[@"TERMINAL_PRO_NO_OPEN"] = @"1";
         [self.backendTask setEnvironment:env];
 
         NSError *err = nil;
         [self.backendTask launchAndReturnError:&err];
         if (err) {
-            NSLog(@"[TerminalPro] Failed to launch backend: %@", err);
+            NSLog(@"[AeroTerm] Failed to launch backend: %@", err);
         }
     }
 

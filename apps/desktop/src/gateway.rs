@@ -134,7 +134,7 @@ async fn static_or_spa_handler(uri: axum::http::Uri) -> Response {
             } else {
                 (
                     axum::http::StatusCode::NOT_FOUND,
-                    "TerminalPro: Frontend assets not found",
+                    "AeroTerm: Frontend assets not found",
                 )
                     .into_response()
             }
