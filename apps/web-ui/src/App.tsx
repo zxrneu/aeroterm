@@ -1143,7 +1143,7 @@ export function App() {
             overflow: 'hidden',
           }}
         >
-          {/* Quick Commands Bar (XTerminal Signature Feature) */}
+          {/* Quick Commands Bar */}
           <div
             style={{
               display: 'flex',

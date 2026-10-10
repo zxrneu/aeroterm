@@ -1,8 +1,7 @@
-# Product Roadmap & Implementation Schedule: Rust-based Terminal Workstation (XTerminal Benchmark)
+# Product Roadmap & Implementation Schedule: AeroTerm Workstation
 
-> **项目代号**：`TerminalPro`（基于 Rust 构建的现代化极客级跨平台终端与服务器管理工作站）  
-> **对标产品**：[XTerminal](https://docs.xterminal.cn/)  
-> **技术核心**：Rust 2024 / Tauri 2.0 / Tokio / Russh / xterm.js / IronRDP / Agentless Monitor / Local MCP Server  
+> **项目名称**：`AeroTerm`（基于 Rust 构建的现代化极客级跨平台终端与服务器管理工作站）  
+> **技术核心**：Rust 2024 / Cocoa WebKit / Tokio / Russh / xterm.js / IronRDP / Agentless Monitor / Local MCP Server  
 > **文档归档**：`doc/product_roadmap_and_schedule.md`
 
 ---
@@ -12,11 +11,11 @@
 ### 1.1 产品愿景
 打造一款**纯 Rust 核心驱动、极致性能、内存安全、零知识端到端加密、AI 原生与 MCP 互联**的下一代多协议终端与服务器管理工作站。
 
-全面对标并超越 XTerminal，解决现有基于 Electron 架构终端工具（如 Termius、Electerm、Tabby 等）普遍存在的**内存占用高（动辄 500MB~1GB）、启动缓慢、高并发 SSH/SFTP 传输卡顿、安全审计弱**等痛点；同时克服纯 C/C++ 传统工具（如 Xshell、SecureCRT、WindTerm）界面现代化程度不足、缺乏 AI 智能体生态与 MCP 扩展能力的缺陷。
+解决现有基于 Electron 架构终端工具（如 Termius、Electerm、Tabby 等）普遍存在的**内存占用高（动辄 500MB~1GB）、启动缓慢、高并发 SSH/SFTP 传输卡顿、安全审计弱**等痛点；同时克服纯 C/C++ 传统工具（如 Xshell、SecureCRT、WindTerm）界面现代化程度不足、缺乏 AI 智能体生态与 MCP 扩展能力的缺陷。
 
-### 1.2 核心指标对标
+### 1.2 核心指标对比
 
-| 指标维度 | 传统 Electron 终端 | 传统 C/C++ 终端 (Xshell/CRT) | 本产品 (TerminalPro / Rust + Tauri 2.0) |
+| 指标维度 | 传统 Electron 终端 | 传统 C/C++ 终端 (Xshell/CRT) | 本产品 (AeroTerm / Rust + WebKit) |
 | :--- | :--- | :--- | :--- |
 | **安装包体积** | 120MB ~ 250MB | 30MB ~ 60MB | **< 25MB** (超轻量打包) |
 | **冷启动时间** | 1.8s ~ 3.5s | 0.8s ~ 1.5s | **< 0.4s** (毫秒级即开即用) |
@@ -28,11 +27,11 @@
 
 ---
 
-## 2. 详细功能矩阵（对标 XTerminal 全能力）
+## 2. 详细功能矩阵（全景能力）
 
 ```mermaid
 mindmap
-  root((TerminalPro<br/>功能全景))
+  root((AeroTerm<br/>功能全景))
     连接中心
       SSH / Telnet
       本地终端 PTY
@@ -87,7 +86,7 @@ mindmap
    - 会话锁屏保护与超时自锁机制。
 4. **资产组织与导入导出**：
    - 树形多级分组、标签（Tags）、收藏夹、最近访问、快速拼音与模糊搜索。
-   - 兼容 OpenSSH `~/.ssh/config`、Termius、FinalShell、XTerminal 数据导入与加密导出。
+   - 兼容 OpenSSH `~/.ssh/config`、Termius、FinalShell 等格式数据导入与加密导出。
 
 ### 2.2 现代终端核心交互 (Modern Terminal Experience)
 1. **多维度视窗布局**：
@@ -113,7 +112,7 @@ mindmap
    - 树形层级浏览、路径面包屑、快捷进入根目录/家目录/常用书签。
    - 支持多文件批量拖拽上传、下载、删除、移动、重命名。
 2. **海量小文件流式归档快传 (Tar/Zstd 智能加速)**：
-   - 传统 SFTP 传输上千个小文件由于往返延迟极慢。TerminalPro 内置智能打包算法：本地在内存中流式 tar 打包并通过 SSH 管道流式发往远端解压，传输速度提升 10~50 倍。
+   - 传统 SFTP 传输上千个小文件由于往返延迟极慢。AeroTerm 内置智能打包算法：本地在内存中流式 tar 打包并通过 SSH 管道流式发往远端解压，传输速度提升 10~50 倍。
 3. **稳健传输队列**：
    - 支持并发多块传输、大文件断点续传、文件校验（MD5/SHA256）。
    - 冲突处理策略：覆盖、跳过、自动重命名、按时间与大小智能比对。
@@ -159,7 +158,7 @@ mindmap
    - **命令沙箱解释**：对于复杂或高危命令（如 `iptables`、`awk`、`rm -rf`），提供逐句解析与安全告警。
    - **主流模型生态兼容**：无缝对接 OpenAI、Claude、DeepSeek、阿里通义千问、Ollama 本地大模型。
 2. **本地标准 MCP (Model Context Protocol) 服务**：
-   - **Streamable HTTP / SSE 协议实现**：TerminalPro 本地监听（默认 `127.0.0.1:12335`），向外部客户端（Claude Code、Codex、Cursor、Agentic Tools 等）暴露终端工具能力。
+   - **Streamable HTTP / SSE 协议实现**：AeroTerm 本地监听（默认 `127.0.0.1:12335`），向外部客户端（Claude Code、Codex、Cursor、Agentic Tools 等）暴露终端工具能力。
    - **多层次安全访问控制**：
      - **主机白名单**：精细控制允许外部客户端访问的远程主机与本地目录范围。
      - **工具分组策略**：可单独启用/停用 `terminal_exec`（命令执行）、`file_read`（读取文件）、`file_write`（修改文件）、`workspace_ops`。
@@ -186,16 +185,16 @@ mindmap
 
 | 选型方案 | 优势 | 劣势 | 结论 |
 | :--- | :--- | :--- | :--- |
-| **方案 A：纯 Rust 原生 GUI**<br/>(egui / Iced / Slint) | 纯 Rust 实现，单一二进制依赖极少 | 缺少成熟终端仿真器（没有完备的 OSC 133、Sixel、CJK 输入法支持）；无法集成 VSCode Monaco Editor；图表与复杂树形组件生态匮乏 | **不采用**（无法达到 XTerminal / 现代商用终端的使用质感） |
+| **方案 A：纯 Rust 原生 GUI**<br/>(egui / Iced / Slint) | 纯 Rust 实现，单一二进制依赖极少 | 缺少成熟终端仿真器（没有完备的 OSC 133、Sixel、CJK 输入法支持）；无法集成 VSCode Monaco Editor；图表与复杂树形组件生态匮乏 | **不采用**（无法达到现代生产级终端的使用质感） |
 | **方案 B：纯 Rust 文本终端**<br/>(Ratatui / TUI) | 极致轻量，可在终端内运行 | 缺乏图形界面、无法实现 RDP/VNC 桌面、可视化图表和富交互编辑器 | **不采用**（定位不匹配） |
 | **方案 C：Electron + Node.js**<br/>(常规方案) | Web 生态丰富，开发速度快 | 内存巨大（300MB+），高并发 SFTP 性能瓶颈，安装包臃肿 | **坚决摒弃** |
-| **方案 D：Rust Core + Tauri 2.0 + 现代 Webview**<br/>(TerminalPro 选型) | **Rust 承担 100% 协议网络/安全核心；IPC 零拷贝二进制传输；跨平台安装包仅 20MB；内存占用仅 40MB；完美享用 xterm.js 与 Monaco Editor 顶尖生态** | 需要设计精巧的前后端 IPC 协议与状态同步机制 | **最优解（最终选型）** |
+| **方案 D：Rust Core + 现代 Webview**<br/>(AeroTerm 选型) | **Rust 承担 100% 协议网络/安全核心；IPC 零拷贝二进制传输；跨平台安装包仅 3.6MB；内存占用仅 40MB；完美享用 xterm.js 与 Monaco Editor 顶尖生态** | 需要设计精巧的前后端 IPC 协议与状态同步机制 | **最优解（最终选型）** |
 
 ### 3.2 三层解耦系统架构图
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        TerminalPro UI (Presentation Layer)             │
+│                        AeroTerm UI (Presentation Layer)                │
 │   React 19 + TypeScript + Tailwind CSS + Radix UI + Lucide React       │
 │                                                                        │
 │  ┌──────────────────────┐  ┌───────────────────┐  ┌─────────────────┐  │
@@ -301,7 +300,7 @@ terminal_pro/
 
 ```mermaid
 gantt
-    title TerminalPro 实施路线甘特图 (16 周)
+    title AeroTerm 实施路线甘特图 (16 周)
     dateFormat  YYYY-MM-DD
     section M0 架构奠基
     Workspace搭建与基础库选型     :m0_1, 2026-10-12, 1w
@@ -393,7 +392,7 @@ gantt
 ---
 
 ### 里程碑 M3：Shell Integration、广播输入与服务器监控 (第 9~11 周)
-- **目标**：对齐 XTerminal 核心差异化特色，实现智能化命令块、广播输入与免 Agent 监控。
+- **目标**：实现智能化命令块、广播输入与免 Agent 监控。
 - **具体研发任务**：
   1. **Shell Integration (OSC 133)**：
      - 注入/适配主流 Shell（bash, zsh, fish）的 OSC 133 转义序列。
@@ -495,4 +494,4 @@ gantt
 
 ## 7. 结语
 
-本技术路线与排期文档作为 **TerminalPro** 项目的顶层设计基石，后续研发工作将完全按照此文档中的架构分层、Crates 划分与 M0~M5 里程碑节奏稳步推进。使用 Git 对本文档及全项目源码进行严格的版本控制与追溯。
+本技术路线与排期文档作为 **AeroTerm** 项目的顶层设计基石，后续研发工作将完全按照此文档中的架构分层、Crates 划分与 M0~M5 里程碑节奏稳步推进。使用 Git 对本文档及全项目源码进行严格的版本控制与追溯。
